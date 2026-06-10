@@ -1,0 +1,25 @@
+# Local secrets and machine-specific config
+config.env
+*.env
+!config.example.env
+
+# Logs and runtime files
+*.log
+logs/
+*.pid
+*.sock
+
+# Build outputs
+turnsocks
+turnsocks-panel
+build/
+dist/
+bin/
+SHA256SUMS
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

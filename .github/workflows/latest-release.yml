@@ -1,0 +1,51 @@
+name: Latest Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: latest-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Build and publish latest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: make check
+
+      - name: Build release assets
+        run: make release
+
+      - name: Publish latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          git tag -f latest "$GITHUB_SHA"
+          git push -f origin latest
+          gh release create latest dist/* \
+            --title "latest" \
+            --notes "Automated latest build from ${GITHUB_SHA}." \
+            --latest
