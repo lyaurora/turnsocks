@@ -77,4 +77,9 @@ make check
 make release
 ```
 
+## 限制
+
+- 暂不支持 IPv6 目标地址，目标需要是 IPv4，或域名解析到 IPv4。
+- 暂不处理 SOCKS5 协议自己的 UDP 分片。这里指 SOCKS5 UDP 请求头里的 `FRAG` 字段，不是系统网络层的 IP 分片；当前只接受普通 UDP 包，也就是 `FRAG=0`。常见 DNS、QUIC 和应用 UDP 流量通常不受影响；如果某个客户端发送 `FRAG>0` 的 SOCKS5 UDP 分片包，当前会拒绝处理。
+
 面板默认监听 `127.0.0.1:10808`。建议通过 SSH 转发、Nginx 反代或私有隧道访问，不要直接暴露到公网。
