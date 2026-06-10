@@ -1,8 +1,17 @@
 # turnsocks
 
-`turnsocks` 用 TURN 服务器作为中转通道，把本机代理流量转发出去。SOCKS5 只是本地入口，方便浏览器、系统代理或其他客户端接入；项目重点是复用 TURN 节点完成代理转发。
+`turnsocks` 是一个基于 TURN 服务器转发代理流量的小工具。它会在本机启动一个 SOCKS5 入口，浏览器、系统代理或其他客户端连到这个本地 SOCKS5 后，实际出站流量会通过配置的 TURN 节点中转出去。
 
-项目带一个本地 Web 面板，用来添加、删除、切换 TURN 节点，并重启代理服务。推送到 `main` 后，GitHub Actions 会自动刷新固定的 `latest` Release，生成 Linux amd64 和 Linux arm64 静态二进制。
+SOCKS5 只是本地接入层，项目主体是 TURN 转发：
+
+- 本地监听：默认启动 `127.0.0.1:1080` SOCKS5 服务。
+- DNS 解析：收到域名目标时，先通过配置的 DoH 服务器解析为 IP，并在本地短暂缓存。
+- TCP 代理：SOCKS5 `CONNECT` 请求会解析目标地址，然后通过 TURN TCP allocation、`CONNECT` 和 `CONNECTION-BIND` 建立中转连接。
+- UDP 代理：SOCKS5 `UDP ASSOCIATE` 会创建本地 UDP 端口，解析目标地址后通过 TURN UDP allocation、`CREATE-PERMISSION` 和 `SEND/DATA` indication 转发 UDP 数据。
+- 节点池：支持配置多个 TURN 节点，失败节点会短暂冷却，后续请求自动尝试其他节点。
+- 面板：本地 Web 面板可添加、删除、切换 TURN 节点，并重启代理服务。
+
+推送到 `main` 后，GitHub Actions 会自动刷新固定的 `latest` Release，生成 Linux amd64 和 Linux arm64 静态二进制。
 
 真实的 `config.env` 已被 Git 忽略。每台 VPS 只保留自己的本地配置，不要提交 TURN 账号、密码或节点地址。
 
