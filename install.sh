@@ -10,7 +10,6 @@ CONFIG_FILE=${CONFIG_FILE:-$INSTALL_DIR/config.env}
 SYSTEMCTL=$(command -v systemctl || true)
 GO_CMD=${GO_CMD:-go}
 SOURCE_CONFIG=${SOURCE_CONFIG:-$SCRIPT_DIR/config.env}
-CHECKSUM_FILE=${CHECKSUM_FILE:-$SCRIPT_DIR/SHA256SUMS}
 RELEASE_REPO=${RELEASE_REPO:-lyaurora/turnsocks}
 RELEASE_TAG=${RELEASE_TAG:-latest}
 
@@ -43,7 +42,6 @@ run_root() {
 INSTALL_DIR=$(abs_path "$INSTALL_DIR")
 CONFIG_FILE=$(abs_path "$CONFIG_FILE")
 SOURCE_CONFIG=$(abs_path "$SOURCE_CONFIG")
-CHECKSUM_FILE=$(abs_path "$CHECKSUM_FILE")
 
 target_platform() {
   os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -193,16 +191,10 @@ fi
 
 cd "$SCRIPT_DIR"
 TARGET=${TARGET:-$(target_platform)}
-PREBUILT_DIR="$SCRIPT_DIR/bin/$TARGET"
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 
-if [ -x "$PREBUILT_DIR/turnsocks" ] && [ -x "$PREBUILT_DIR/turnsocks-panel" ]; then
-  verify_checksum_entry "$CHECKSUM_FILE" "bin/$TARGET/turnsocks" "$PREBUILT_DIR/turnsocks"
-  verify_checksum_entry "$CHECKSUM_FILE" "bin/$TARGET/turnsocks-panel" "$PREBUILT_DIR/turnsocks-panel"
-  install_binary "$PREBUILT_DIR/turnsocks" "$INSTALL_DIR/turnsocks"
-  install_binary "$PREBUILT_DIR/turnsocks-panel" "$INSTALL_DIR/turnsocks-panel"
-elif download_release_binaries "$tmp_dir/release"; then
+if download_release_binaries "$tmp_dir/release"; then
   install_binary "$tmp_dir/release/turnsocks-$TARGET" "$INSTALL_DIR/turnsocks"
   install_binary "$tmp_dir/release/turnsocks-panel-$TARGET" "$INSTALL_DIR/turnsocks-panel"
 else
