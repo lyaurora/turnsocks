@@ -50,6 +50,7 @@ type Config struct {
 	TurnCooldown time.Duration
 	ConfigPath   string
 	DoH          string
+	DoHClient    *http.Client
 	DNSTTL       time.Duration
 	Timeout      time.Duration
 	LogVerbose   bool
@@ -144,6 +145,7 @@ func main() {
 	if dohURL.Scheme != "http" && dohURL.Scheme != "https" || dohURL.Host == "" {
 		log.Fatal("DoH endpoint must be an http or https URL")
 	}
+	cfg.DoHClient = &http.Client{Timeout: cfg.Timeout}
 
 	log.Printf("TURN servers: %s", strings.Join(turnServerAddrs(cfg.TurnServers), ", "))
 	log.Printf("TURN auth: per-server inline only")
@@ -273,30 +275,31 @@ func (p *proxyController) acceptLoop(ln net.Listener) {
 	}
 }
 
-func parseTurnServers(turns string) []turnServerConfig {
+func parseTurnServers(turns string) ([]turnServerConfig, error) {
 	seen := make(map[string]struct{})
 	var servers []turnServerConfig
-	add := func(raw string) {
-		for _, part := range strings.Split(raw, ",") {
-			server, err := parseTurnServerConfig(part)
-			if err != nil || server.Addr == "" {
-				continue
-			}
-			key := server.String()
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			servers = append(servers, server)
+	for i, part := range strings.Split(turns, ",") {
+		raw := strings.TrimSpace(part)
+		if raw == "" {
+			continue
 		}
+		server, err := parseTurnServerConfig(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid TURN server #%d %q: %w", i+1, raw, err)
+		}
+		key := server.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		servers = append(servers, server)
 	}
 
-	add(turns)
-	return servers
+	return servers, nil
 }
 
 func loadTurnServers(cfg Config) ([]turnServerConfig, error) {
-	return parseTurnServers(cfg.Turns), nil
+	return parseTurnServers(cfg.Turns)
 }
 
 func parseTurnServerConfig(raw string) (turnServerConfig, error) {
@@ -646,15 +649,20 @@ func resolveDoH(host string, cfg Config) (net.IP, error) {
 		return nil, errors.New("IPv6 is not supported")
 	}
 
-	if v, ok := dnsCache.Load(host); ok {
+	queryHost := normalizeDNSHost(host)
+	if queryHost == "" {
+		return nil, errors.New("empty DNS host")
+	}
+
+	if v, ok := dnsCache.Load(queryHost); ok {
 		e := v.(dnsEntry)
 		if time.Now().Before(e.ExpireAt) {
 			return e.IP, nil
 		}
-		dnsCache.Delete(host)
+		dnsCache.Delete(queryHost)
 	}
 
-	u, err := buildDoHURL(cfg.DoH, host)
+	u, err := buildDoHURL(cfg.DoH, queryHost)
 	if err != nil {
 		return nil, err
 	}
@@ -664,7 +672,10 @@ func resolveDoH(host string, cfg Config) (net.IP, error) {
 	}
 	httpReq.Header.Set("Accept", "application/dns-json")
 
-	httpClient := &http.Client{Timeout: cfg.Timeout}
+	httpClient := cfg.DoHClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: cfg.Timeout}
+	}
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -694,13 +705,17 @@ func resolveDoH(host string, cfg Config) (net.IP, error) {
 						ttl = t
 					}
 				}
-				dnsCache.Store(host, dnsEntry{IP: ip4, ExpireAt: time.Now().Add(ttl)})
+				dnsCache.Store(queryHost, dnsEntry{IP: ip4, ExpireAt: time.Now().Add(ttl)})
 				return ip4, nil
 			}
 		}
 	}
 
-	return nil, fmt.Errorf("no A record for %s", host)
+	return nil, fmt.Errorf("no A record for %s", queryHost)
+}
+
+func normalizeDNSHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
 func cleanupDNSCache(interval time.Duration) {
