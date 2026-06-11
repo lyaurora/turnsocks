@@ -51,6 +51,7 @@ type Config struct {
 	ConfigPath   string
 	DoH          string
 	DoHClient    *http.Client
+	StatePath    string
 	DNSTTL       time.Duration
 	Timeout      time.Duration
 	LogVerbose   bool
@@ -70,9 +71,11 @@ type turnServerConfig struct {
 }
 
 type turnPool struct {
-	mu       sync.Mutex
-	servers  []turnServerState
-	cooldown time.Duration
+	mu        sync.Mutex
+	servers   []turnServerState
+	cooldown  time.Duration
+	statePath string
+	current   string
 }
 
 type turnAttemptError struct {
@@ -109,6 +112,11 @@ type dnsEntry struct {
 	ExpireAt time.Time
 }
 
+type runtimeState struct {
+	CurrentAddr string `json:"current_addr"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
 var dnsCache sync.Map
 
 func main() {
@@ -126,6 +134,7 @@ func main() {
 	flag.DurationVar(&cfg.TurnCooldown, "turn-cooldown", 30*time.Second, "TURN server failure cooldown")
 	flag.StringVar(&cfg.ConfigPath, "config", configPath, "env config file path")
 	flag.StringVar(&cfg.DoH, "doh", getenv("DOH", "https://cloudflare-dns.com/dns-query"), "DoH endpoint")
+	flag.StringVar(&cfg.StatePath, "state", getenv("STATE_PATH", ""), "runtime state file path")
 	flag.DurationVar(&cfg.DNSTTL, "dns-ttl", 300*time.Second, "DNS cache TTL")
 	flag.DurationVar(&cfg.Timeout, "timeout", 20*time.Second, "network timeout")
 	flag.BoolVar(&cfg.LogVerbose, "v", false, "verbose log")
@@ -141,6 +150,10 @@ func main() {
 		log.Fatal("turn-cooldown must be greater than 0")
 	}
 	cfg.ConfigPath = absPath(cfg.ConfigPath)
+	if cfg.StatePath == "" {
+		cfg.StatePath = defaultStatePath(cfg.ConfigPath)
+	}
+	cfg.StatePath = absPath(cfg.StatePath)
 	var err error
 	cfg.TurnServers, err = loadTurnServers(cfg)
 	if err != nil {
@@ -149,7 +162,8 @@ func main() {
 	if len(cfg.TurnServers) == 0 {
 		log.Fatal("missing TURN servers, set TURN_SERVERS in config.env")
 	}
-	cfg.TurnPool = newTurnPool(cfg.TurnServers, cfg.TurnCooldown)
+	cfg.TurnPool = newTurnPool(cfg.TurnServers, cfg.TurnCooldown, cfg.StatePath)
+	cfg.TurnPool.markSuccess(cfg.TurnServers[0])
 	dohURL, err := url.ParseRequestURI(cfg.DoH)
 	if err != nil {
 		log.Fatalf("invalid DoH endpoint: %v", err)
@@ -184,6 +198,13 @@ func defaultConfigPath() string {
 		return filepath.Join(filepath.Dir(exe), "config.env")
 	}
 	return "config.env"
+}
+
+func defaultStatePath(configPath string) string {
+	if configPath != "" {
+		return filepath.Join(filepath.Dir(configPath), "turnsocks.state")
+	}
+	return "turnsocks.state"
 }
 
 func absPath(path string) string {
@@ -361,8 +382,8 @@ func turnServerAddrs(servers []turnServerConfig) []string {
 	return addrs
 }
 
-func newTurnPool(servers []turnServerConfig, cooldown time.Duration) *turnPool {
-	p := &turnPool{cooldown: cooldown}
+func newTurnPool(servers []turnServerConfig, cooldown time.Duration, statePath string) *turnPool {
+	p := &turnPool{cooldown: cooldown, statePath: statePath}
 	for _, server := range servers {
 		p.servers = append(p.servers, turnServerState{Server: server})
 	}
@@ -393,13 +414,24 @@ func (p *turnPool) candidates() []turnServerConfig {
 
 func (p *turnPool) markSuccess(server turnServerConfig) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	currentChanged := false
 	for i := range p.servers {
 		if p.servers[i].Server.String() == server.String() {
 			p.servers[i].FailedUntil = time.Time{}
 			p.servers[i].LastError = ""
-			return
+			if p.current != server.Addr {
+				p.current = server.Addr
+				currentChanged = true
+			}
+			break
+		}
+	}
+	statePath := p.statePath
+	p.mu.Unlock()
+
+	if currentChanged {
+		if err := writeRuntimeState(statePath, server.Addr); err != nil {
+			log.Printf("write runtime state failed: %v", err)
 		}
 	}
 }
@@ -427,6 +459,27 @@ func isTurnServerFailure(err error) bool {
 
 func turnPeerError(err error) error {
 	return &turnAttemptError{err: err, serverFailure: false}
+}
+
+func writeRuntimeState(path string, currentAddr string) error {
+	if path == "" {
+		return nil
+	}
+	state := runtimeState{
+		CurrentAddr: currentAddr,
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+	}
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func validateTurnAddr(addr string) error {

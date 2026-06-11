@@ -5,6 +5,7 @@ config.env
 
 # Logs and runtime files
 *.log
+turnsocks.state*
 logs/
 *.pid
 *.sock

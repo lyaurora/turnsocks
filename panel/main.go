@@ -27,6 +27,7 @@ const (
 
 type app struct {
 	configPath string
+	statePath  string
 	configMu   sync.Mutex
 }
 
@@ -42,6 +43,7 @@ type serverInfo struct {
 	Username string `json:"username,omitempty"`
 	HasAuth  bool   `json:"hasAuth"`
 	Current  bool   `json:"current"`
+	Default  bool   `json:"default"`
 }
 
 type serviceInfo struct {
@@ -65,12 +67,23 @@ type apiResponse struct {
 	Message string `json:"message"`
 }
 
+type runtimeState struct {
+	CurrentAddr string `json:"current_addr"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
 func main() {
 	listen := flag.String("listen", defaultPanelListen, "panel listen address")
 	configPath := flag.String("config", defaultConfigPath(), "turnsocks config.env path")
+	statePath := flag.String("state", "", "turnsocks runtime state path")
 	flag.Parse()
 
-	a := &app{configPath: absPath(*configPath)}
+	cfgPath := absPath(*configPath)
+	stPath := *statePath
+	if stPath == "" {
+		stPath = defaultStatePath(cfgPath)
+	}
+	a := &app{configPath: cfgPath, statePath: absPath(stPath)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", a.handleIndex)
 	mux.HandleFunc("/api/state", a.handleState)
@@ -98,6 +111,13 @@ func defaultConfigPath() string {
 		return filepath.Join(filepath.Dir(exe), "config.env")
 	}
 	return "config.env"
+}
+
+func defaultStatePath(configPath string) string {
+	if configPath != "" {
+		return filepath.Join(filepath.Dir(configPath), "turnsocks.state")
+	}
+	return "turnsocks.state"
 }
 
 func absPath(path string) string {
@@ -131,10 +151,11 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	state := readRuntimeState(a.statePath)
 	writeJSON(w, stateResponse{
 		Listen:  cfg.Listen,
 		DoH:     cfg.DoH,
-		Servers: buildServerInfo(cfg.Servers),
+		Servers: buildServerInfo(cfg.Servers, state.CurrentAddr),
 		Service: readServiceInfo(),
 	})
 }
@@ -395,17 +416,47 @@ func parseServer(raw string) (serverInfo, error) {
 	return info, nil
 }
 
-func buildServerInfo(servers []string) []serverInfo {
+func buildServerInfo(servers []string, currentAddr string) []serverInfo {
 	infos := make([]serverInfo, 0, len(servers))
 	for i, server := range servers {
 		info, err := parseServer(server)
 		if err != nil {
 			info = serverInfo{Raw: server, Addr: server}
 		}
-		info.Current = i == 0
+		info.Default = i == 0
 		infos = append(infos, info)
 	}
+
+	currentIndex := -1
+	for i, info := range infos {
+		if currentAddr != "" && info.Addr == currentAddr {
+			currentIndex = i
+			break
+		}
+	}
+	if currentIndex < 0 && len(infos) > 0 {
+		currentIndex = 0
+	}
+	if currentIndex >= 0 {
+		infos[currentIndex].Current = true
+	}
 	return infos
+}
+
+func readRuntimeState(path string) runtimeState {
+	if path == "" {
+		return runtimeState{}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return runtimeState{}
+	}
+	var state runtimeState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return runtimeState{}
+	}
+	state.CurrentAddr = strings.TrimSpace(state.CurrentAddr)
+	return state
 }
 
 func containsServer(servers []string, server string) bool {
@@ -900,7 +951,7 @@ const indexHTML = `<!doctype html>
     <section class="shell-window nodes-card">
       <div class="shell-bar">
         <strong>节点池</strong>
-        <span class="shell-chip">第一个为当前默认</span>
+        <span class="shell-chip">第一个为默认节点</span>
       </div>
       <div class="panel-body">
         <div id="nodes" class="nodes"></div>
@@ -961,9 +1012,9 @@ const indexHTML = `<!doctype html>
     }
     function nodeHTML(node) {
       if (!node) return '<div class="addr">暂无节点</div>';
-      const status = node.current ? '<span class="status-pill status-pill-ok">当前</span>' : '<span class="status-pill">备用</span>';
+      const status = node.current ? '<span class="status-pill status-pill-ok">运行中</span>' : (node.default ? '<span class="status-pill">默认</span>' : '<span class="status-pill">备用</span>');
       const auth = node.hasAuth ? '鉴权：' + escapeHTML(node.username || '已配置') : '无鉴权';
-      const selectBtn = node.current ? '' : '<button class="btn primary" data-action="select" data-server="' + escapeAttr(node.raw) + '">设为当前</button>';
+      const selectBtn = node.default ? '' : '<button class="btn primary" data-action="select" data-server="' + escapeAttr(node.raw) + '">设为默认</button>';
       return '<div><div class="addr">' + escapeHTML(node.raw) + '</div><div class="meta">' + status + '<span class="shell-chip">' + escapeHTML(auth) + '</span></div></div><div class="actions">' + selectBtn + '<button class="btn danger" data-action="delete" data-server="' + escapeAttr(node.raw) + '">删除</button></div>';
     }
     async function refresh() {
