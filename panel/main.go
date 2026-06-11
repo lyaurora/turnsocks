@@ -1032,12 +1032,25 @@ const indexHTML = `<!doctype html>
       $('dohValue').textContent = data.doh || '-';
       $('nodes').innerHTML = data.servers.map(n => '<div class="node-row ' + (n.current ? 'current' : '') + '">' + nodeHTML(n) + '</div>').join('') || '<div class="node-row"><div class="addr">暂无节点</div></div>';
     }
+    function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+    function errorMessage(err) { return err && err.message === 'Failed to fetch' ? '连接面板失败' : (err.message || '操作失败'); }
+    async function refreshWithRetry() {
+      for (let i = 0; i < 4; i++) {
+        try { await refresh(); return; }
+        catch (err) { if (i === 3) throw err; }
+        await sleep(450 * (i + 1));
+      }
+    }
     async function run(fn) {
       if (busy) return;
       busy = true;
       document.querySelectorAll('button').forEach(b => b.disabled = true);
-      try { const res = await fn(); toast(res.message || '完成'); await refresh(); }
-      catch (err) { toast(err.message || '操作失败'); }
+      try {
+        const res = await fn();
+        toast(res.message || '完成');
+        refreshWithRetry().catch(() => setTimeout(() => refresh().catch(() => {}), 2500));
+      }
+      catch (err) { toast(errorMessage(err)); }
       finally { busy = false; document.querySelectorAll('button').forEach(b => b.disabled = false); }
     }
     $('addBtn').addEventListener('click', () => run(async () => {
