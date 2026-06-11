@@ -72,8 +72,20 @@ type turnServerConfig struct {
 type turnPool struct {
 	mu       sync.Mutex
 	servers  []turnServerState
-	next     int
 	cooldown time.Duration
+}
+
+type turnAttemptError struct {
+	err           error
+	serverFailure bool
+}
+
+func (e *turnAttemptError) Error() string {
+	return e.err.Error()
+}
+
+func (e *turnAttemptError) Unwrap() error {
+	return e.err
 }
 
 type proxyController struct {
@@ -364,9 +376,7 @@ func (p *turnPool) candidates() []turnServerConfig {
 	now := time.Now()
 	var active []turnServerConfig
 	var cooling []turnServerConfig
-	for i := 0; i < len(p.servers); i++ {
-		idx := (p.next + i) % len(p.servers)
-		s := p.servers[idx]
+	for _, s := range p.servers {
 		if now.Before(s.FailedUntil) {
 			cooling = append(cooling, s.Server)
 			continue
@@ -389,7 +399,6 @@ func (p *turnPool) markSuccess(server turnServerConfig) {
 		if p.servers[i].Server.String() == server.String() {
 			p.servers[i].FailedUntil = time.Time{}
 			p.servers[i].LastError = ""
-			p.next = i
 			return
 		}
 	}
@@ -406,6 +415,18 @@ func (p *turnPool) markFailure(server turnServerConfig, err error) {
 			return
 		}
 	}
+}
+
+func isTurnServerFailure(err error) bool {
+	var attemptErr *turnAttemptError
+	if errors.As(err, &attemptErr) {
+		return attemptErr.serverFailure
+	}
+	return true
+}
+
+func turnPeerError(err error) error {
+	return &turnAttemptError{err: err, serverFailure: false}
 }
 
 func validateTurnAddr(addr string) error {
@@ -953,7 +974,12 @@ func dialTurnTCP(cfg Config, targetIP net.IP, targetPort int) (net.Conn, net.Con
 			cfg.TurnPool.markSuccess(turn)
 			return dataConn, ctrlConn, stopRefresh, turn.Addr, nil
 		}
-		cfg.TurnPool.markFailure(turn, err)
+		if isTurnServerFailure(err) {
+			cfg.TurnPool.markFailure(turn, err)
+			log.Printf("TURN TCP candidate failed via %s: %v", turn.Addr, err)
+		} else {
+			log.Printf("TURN TCP peer connect failed via %s without cooling: %v", turn.Addr, err)
+		}
 		errs = append(errs, fmt.Errorf("%s: %w", turn.Addr, err))
 	}
 	return nil, nil, nil, "", errors.Join(errs...)
@@ -994,7 +1020,7 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 	if res.Type.Class != stun.ClassSuccessResponse {
 		c, r := getErrorCode(res)
 		ctrlConn.Close()
-		return nil, nil, nil, fmt.Errorf("connect error %d %s", c, r)
+		return nil, nil, nil, turnPeerError(fmt.Errorf("connect error %d %s", c, r))
 	}
 
 	connID, err := res.Get(AttrConnectionID)
@@ -1149,6 +1175,7 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 		turnConn, err := net.DialTimeout("tcp", turn.Addr, cfg.Timeout)
 		if err != nil {
 			cfg.TurnPool.markFailure(turn, err)
+			log.Printf("UDP TURN candidate failed via %s: %v", turn.Addr, err)
 			errs = append(errs, fmt.Errorf("%s: %w", turn.Addr, err))
 			continue
 		}
@@ -1168,6 +1195,7 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 		}
 		if err := s.allocate(); err != nil {
 			cfg.TurnPool.markFailure(turn, err)
+			log.Printf("UDP TURN candidate failed via %s: %v", turn.Addr, err)
 			_ = turnConn.Close()
 			errs = append(errs, fmt.Errorf("%s: %w", turn.Addr, err))
 			continue

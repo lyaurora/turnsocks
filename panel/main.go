@@ -241,15 +241,15 @@ func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	if err := restartTurnsocks(); err != nil {
+		writeAPIError(w, fmt.Errorf("已删除，但重启失败：%w", err))
+		return
+	}
 	if wasCurrent {
-		if err := restartTurnsocks(); err != nil {
-			writeAPIError(w, fmt.Errorf("已删除，但重启失败：%w", err))
-			return
-		}
 		writeJSON(w, apiResponse{OK: true, Message: "已删除当前节点并重启"})
 		return
 	}
-	writeJSON(w, apiResponse{OK: true, Message: "已删除节点"})
+	writeJSON(w, apiResponse{OK: true, Message: "已删除节点并重启"})
 }
 
 func (a *app) handleRestart(w http.ResponseWriter, r *http.Request) {
