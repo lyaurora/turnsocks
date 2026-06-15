@@ -19,7 +19,7 @@ SOCKS5 只是本地接入层，项目主体是 TURN 转发：
 ## 部署
 
 ```sh
-git clone git@github.com:lyaurora/turnsocks.git
+git clone https://github.com/lyaurora/turnsocks.git
 cd turnsocks
 cp config.example.env config.env
 chmod 600 config.env
@@ -29,10 +29,7 @@ vi config.env
 
 `install.sh` 会从 GitHub `latest` Release 下载当前平台对应的二进制并校验 `SHA256SUMS`。如果下载不到，才会尝试用 Go 从源码构建。
 
-仓库是私有的，新 VPS 下载 Release 需要满足其中一种条件：
-
-- 已安装并登录 `gh`
-- 环境变量里有可读仓库的 `GITHUB_TOKEN` 或 `GH_TOKEN`
+仓库公开后，新 VPS 可以直接 clone 并下载 `latest` Release，不需要额外配置 GitHub Token。
 
 默认会安装到当前目录。也可以指定安装目录和运行用户：
 
