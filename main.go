@@ -40,6 +40,7 @@ const (
 	maxSTUNMessageLength          = 64 * 1024
 	allocationLifetime            = 10 * time.Minute
 	allocationRefreshEvery        = 5 * time.Minute
+	turnUDPAttemptTimeout         = 3 * time.Second
 )
 
 type Config struct {
@@ -58,9 +59,10 @@ type Config struct {
 }
 
 type turnServerState struct {
-	Server      turnServerConfig
-	FailedUntil time.Time
-	LastError   string
+	Server         turnServerConfig
+	FailedUntil    time.Time
+	UDPFailedUntil time.Time
+	LastError      string
 }
 
 type turnServerConfig struct {
@@ -112,12 +114,26 @@ type dnsEntry struct {
 	ExpireAt time.Time
 }
 
+type dnsLookupResult struct {
+	IP  net.IP
+	Err error
+}
+
+type dnsLookupCall struct {
+	done   chan struct{}
+	result dnsLookupResult
+}
+
 type runtimeState struct {
 	CurrentAddr string `json:"current_addr"`
 	UpdatedAt   string `json:"updated_at"`
 }
 
-var dnsCache sync.Map
+var (
+	dnsCache    sync.Map
+	dnsLookupMu sync.Mutex
+	dnsLookups  = make(map[string]*dnsLookupCall)
+)
 
 func main() {
 	cfg := Config{}
@@ -405,11 +421,31 @@ func (p *turnPool) candidates() []turnServerConfig {
 		active = append(active, s.Server)
 	}
 	if len(active) > 0 {
-		return active
+		return preferCurrentFirst(active, p.current)
 	}
 
 	// If every server is cooling down, allow a full pass anyway so recovery is fast.
-	return cooling
+	return preferCurrentFirst(cooling, p.current)
+}
+
+func preferCurrentFirst(servers []turnServerConfig, current string) []turnServerConfig {
+	if current == "" || len(servers) < 2 {
+		return servers
+	}
+	for i, server := range servers {
+		if server.String() != current {
+			continue
+		}
+		if i == 0 {
+			return servers
+		}
+		ordered := make([]turnServerConfig, 0, len(servers))
+		ordered = append(ordered, server)
+		ordered = append(ordered, servers[:i]...)
+		ordered = append(ordered, servers[i+1:]...)
+		return ordered
+	}
+	return servers
 }
 
 func (p *turnPool) markSuccess(server turnServerConfig) {
@@ -419,8 +455,8 @@ func (p *turnPool) markSuccess(server turnServerConfig) {
 		if p.servers[i].Server.String() == server.String() {
 			p.servers[i].FailedUntil = time.Time{}
 			p.servers[i].LastError = ""
-			if p.current != server.Addr {
-				p.current = server.Addr
+			if p.current != server.String() {
+				p.current = server.String()
 				currentChanged = true
 			}
 			break
@@ -444,6 +480,32 @@ func (p *turnPool) markFailure(server turnServerConfig, err error) {
 		if p.servers[i].Server.String() == server.String() {
 			p.servers[i].FailedUntil = time.Now().Add(p.cooldown)
 			p.servers[i].LastError = err.Error()
+			return
+		}
+	}
+}
+
+func (p *turnPool) udpAllowed(server turnServerConfig) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	for i := range p.servers {
+		if p.servers[i].Server.String() == server.String() {
+			return !now.Before(p.servers[i].UDPFailedUntil)
+		}
+	}
+	return true
+}
+
+func (p *turnPool) markUDPFailure(server turnServerConfig, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for i := range p.servers {
+		if p.servers[i].Server.String() == server.String() {
+			p.servers[i].UDPFailedUntil = time.Now().Add(p.cooldown)
+			p.servers[i].LastError = "udp: " + err.Error()
 			return
 		}
 	}
@@ -697,21 +759,39 @@ func pipe(a net.Conn, b net.Conn) {
 	done := make(chan struct{}, 2)
 
 	go func() {
-		_, _ = io.Copy(a, b)
-		_ = a.Close()
-		_ = b.Close()
+		copyAndCloseWrite(a, b)
 		done <- struct{}{}
 	}()
 
 	go func() {
-		_, _ = io.Copy(b, a)
-		_ = a.Close()
-		_ = b.Close()
+		copyAndCloseWrite(b, a)
 		done <- struct{}{}
 	}()
 
 	<-done
 	<-done
+	_ = a.Close()
+	_ = b.Close()
+}
+
+func copyAndCloseWrite(dst net.Conn, src net.Conn) {
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		_ = src.Close()
+		return
+	}
+	closeWrite(dst)
+}
+
+func closeWrite(conn net.Conn) {
+	type closeWriter interface {
+		CloseWrite() error
+	}
+	if c, ok := conn.(closeWriter); ok {
+		_ = c.CloseWrite()
+		return
+	}
+	_ = conn.Close()
 }
 
 func resolveDoH(host string, cfg Config) (net.IP, error) {
@@ -736,6 +816,32 @@ func resolveDoH(host string, cfg Config) (net.IP, error) {
 		dnsCache.Delete(queryHost)
 	}
 
+	return resolveDoHOnce(queryHost, cfg)
+}
+
+func resolveDoHOnce(queryHost string, cfg Config) (net.IP, error) {
+	dnsLookupMu.Lock()
+	if call := dnsLookups[queryHost]; call != nil {
+		dnsLookupMu.Unlock()
+		<-call.done
+		return call.result.IP, call.result.Err
+	}
+	call := &dnsLookupCall{done: make(chan struct{})}
+	dnsLookups[queryHost] = call
+	dnsLookupMu.Unlock()
+
+	ip, err := queryDoH(queryHost, cfg)
+	call.result = dnsLookupResult{IP: ip, Err: err}
+
+	dnsLookupMu.Lock()
+	delete(dnsLookups, queryHost)
+	close(call.done)
+	dnsLookupMu.Unlock()
+
+	return ip, err
+}
+
+func queryDoH(queryHost string, cfg Config) (net.IP, error) {
 	u, err := buildDoHURL(cfg.DoH, queryHost)
 	if err != nil {
 		return nil, err
@@ -873,6 +979,36 @@ func readSTUNMessage(conn net.Conn) (*stun.Message, error) {
 
 	m := stun.New()
 	m.Raw = raw
+	if err := m.Decode(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func decodeSTUNMessage(raw []byte) (*stun.Message, error) {
+	if len(raw) < 20 {
+		return nil, errors.New("short STUN message")
+	}
+	if raw[0]&0xC0 != 0 {
+		return nil, errors.New("invalid STUN message type")
+	}
+	if binary.BigEndian.Uint32(raw[4:8]) != stunMagicCookie {
+		return nil, errors.New("invalid STUN magic cookie")
+	}
+	length := int(binary.BigEndian.Uint16(raw[2:4]))
+	if length%4 != 0 {
+		return nil, fmt.Errorf("invalid STUN length %d", length)
+	}
+	if length > maxSTUNMessageLength {
+		return nil, fmt.Errorf("STUN message too large: %d", length)
+	}
+	total := 20 + length
+	if len(raw) < total {
+		return nil, errors.New("truncated STUN message")
+	}
+
+	m := stun.New()
+	m.Raw = append([]byte(nil), raw[:total]...)
 	if err := m.Decode(); err != nil {
 		return nil, err
 	}
@@ -1169,7 +1305,8 @@ type udpSession struct {
 	password     string
 	clientTCP    net.Conn
 	localUDP     *net.UDPConn
-	turnConn     net.Conn
+	turnConn     stunConn
+	turnNetwork  string
 	realm        stun.Realm
 	nonce        stun.Nonce
 	needAuth     bool
@@ -1225,45 +1362,177 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 		return nil, "", errors.New("no TURN server candidates")
 	}
 	for _, turn := range candidates {
-		turnConn, err := net.DialTimeout("tcp", turn.Addr, cfg.Timeout)
-		if err != nil {
-			cfg.TurnPool.markFailure(turn, err)
-			log.Printf("UDP TURN candidate failed via %s: %v", turn.Addr, err)
-			errs = append(errs, fmt.Errorf("%s: %w", turn.Addr, err))
-			continue
+		var err error
+		if cfg.TurnPool.udpAllowed(turn) {
+			var s *udpSession
+			s, err = newUDPSessionWithNetwork(cfg, clientTCP, localUDP, turn, "udp")
+			if err == nil {
+				cfg.TurnPool.markSuccess(turn)
+				return s, turn.Addr + "/udp", nil
+			}
+			cfg.TurnPool.markUDPFailure(turn, err)
+			errs = append(errs, fmt.Errorf("%s/udp: %w", turn.Addr, err))
+			if cfg.LogVerbose {
+				log.Printf("UDP TURN-over-UDP candidate failed via %s: %v", turn.Addr, err)
+			}
+		} else if cfg.LogVerbose {
+			log.Printf("skip TURN-over-UDP candidate via %s during cooldown", turn.Addr)
 		}
-		username, password := turn.auth()
 
-		s := &udpSession{
-			cfg:         cfg,
-			turn:        turn,
-			username:    username,
-			password:    password,
-			clientTCP:   clientTCP,
-			localUDP:    localUDP,
-			turnConn:    turnConn,
-			pending:     make(map[string]chan *stun.Message),
-			permissions: make(map[string]time.Time),
-			closed:      make(chan struct{}),
+		s, tcpErr := newUDPSessionWithNetwork(cfg, clientTCP, localUDP, turn, "tcp")
+		if tcpErr == nil {
+			cfg.TurnPool.markSuccess(turn)
+			return s, turn.Addr + "/tcp", nil
 		}
-		if err := s.allocate(); err != nil {
-			cfg.TurnPool.markFailure(turn, err)
-			log.Printf("UDP TURN candidate failed via %s: %v", turn.Addr, err)
-			_ = turnConn.Close()
-			errs = append(errs, fmt.Errorf("%s: %w", turn.Addr, err))
-			continue
+		errs = append(errs, fmt.Errorf("%s/tcp: %w", turn.Addr, tcpErr))
+		cfg.TurnPool.markFailure(turn, tcpErr)
+		if err != nil {
+			log.Printf("UDP TURN candidate failed via %s: %v", turn.Addr, errors.Join(err, tcpErr))
+		} else {
+			log.Printf("UDP TURN candidate failed via %s/tcp: %v", turn.Addr, tcpErr)
 		}
-		cfg.TurnPool.markSuccess(turn)
-		return s, turn.Addr, nil
 	}
 	return nil, "", errors.Join(errs...)
+}
+
+func newUDPSessionWithNetwork(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn, turn turnServerConfig, network string) (*udpSession, error) {
+	conn, err := dialSTUNConn(network, turn.Addr, cfg.Timeout)
+	if err != nil {
+		return nil, err
+	}
+	username, password := turn.auth()
+
+	s := &udpSession{
+		cfg:         cfg,
+		turn:        turn,
+		username:    username,
+		password:    password,
+		clientTCP:   clientTCP,
+		localUDP:    localUDP,
+		turnConn:    conn,
+		turnNetwork: network,
+		pending:     make(map[string]chan *stun.Message),
+		permissions: make(map[string]time.Time),
+		closed:      make(chan struct{}),
+	}
+	allocateTimeout := cfg.Timeout
+	if network == "udp" {
+		allocateTimeout = shorterTimeout(cfg.Timeout, turnUDPAttemptTimeout)
+	}
+	if err := s.allocate(allocateTimeout); err != nil {
+		_ = conn.close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func shorterTimeout(a time.Duration, b time.Duration) time.Duration {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 || a < b {
+		return a
+	}
+	return b
+}
+
+func dialSTUNConn(network string, addr string, timeout time.Duration) (stunConn, error) {
+	conn, err := net.DialTimeout(network, addr, timeout)
+	if err != nil {
+		return nil, err
+	}
+	switch network {
+	case "udp":
+		return &udpSTUNConn{conn: conn}, nil
+	case "tcp":
+		return &tcpSTUNConn{conn: conn}, nil
+	default:
+		_ = conn.Close()
+		return nil, fmt.Errorf("unsupported STUN network %q", network)
+	}
+}
+
+type stunConn interface {
+	readMessage(timeout time.Duration) (*stun.Message, error)
+	writeMessage(m *stun.Message, timeout time.Duration) error
+	close() error
+}
+
+type tcpSTUNConn struct {
+	conn net.Conn
+}
+
+func (c *tcpSTUNConn) readMessage(timeout time.Duration) (*stun.Message, error) {
+	if timeout > 0 {
+		if err := c.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return nil, err
+		}
+		defer c.conn.SetReadDeadline(time.Time{})
+	}
+	return readSTUNMessage(c.conn)
+}
+
+func (c *tcpSTUNConn) writeMessage(m *stun.Message, timeout time.Duration) error {
+	if timeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		defer c.conn.SetWriteDeadline(time.Time{})
+	}
+	return writeSTUNMessage(c.conn, m)
+}
+
+func (c *tcpSTUNConn) close() error {
+	return c.conn.Close()
+}
+
+type udpSTUNConn struct {
+	conn net.Conn
+}
+
+func (c *udpSTUNConn) readMessage(timeout time.Duration) (*stun.Message, error) {
+	if timeout > 0 {
+		if err := c.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return nil, err
+		}
+		defer c.conn.SetReadDeadline(time.Time{})
+	}
+
+	buf := make([]byte, 65535)
+	n, err := c.conn.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	return decodeSTUNMessage(buf[:n])
+}
+
+func (c *udpSTUNConn) writeMessage(m *stun.Message, timeout time.Duration) error {
+	if timeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		defer c.conn.SetWriteDeadline(time.Time{})
+	}
+	m.WriteHeader()
+	n, err := c.conn.Write(m.Raw)
+	if err != nil {
+		return err
+	}
+	if n != len(m.Raw) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func (c *udpSTUNConn) close() error {
+	return c.conn.Close()
 }
 
 func (s *udpSession) close() {
 	s.closeOnce.Do(func() {
 		close(s.closed)
 		_ = s.localUDP.Close()
-		_ = s.turnConn.Close()
+		_ = s.turnConn.close()
 	})
 }
 
@@ -1286,9 +1555,7 @@ func (s *udpSession) request(req *stun.Message, timeout time.Duration) (*stun.Me
 	}()
 
 	s.writeMu.Lock()
-	_ = s.turnConn.SetWriteDeadline(time.Now().Add(timeout))
-	err := writeSTUNMessage(s.turnConn, req)
-	_ = s.turnConn.SetWriteDeadline(time.Time{})
+	err := s.turnConn.writeMessage(req, timeout)
 	s.writeMu.Unlock()
 	if err != nil {
 		return nil, err
@@ -1307,22 +1574,16 @@ func (s *udpSession) request(req *stun.Message, timeout time.Duration) (*stun.Me
 	}
 }
 
-func (s *udpSession) allocate() error {
+func (s *udpSession) allocate(timeout time.Duration) error {
 	req := stun.New()
 	req.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
 	req.TransactionID = stun.NewTransactionID()
 	req.Add(AttrRequestedTransport, []byte{0x11, 0x00, 0x00, 0x00})
 
-	// Allocation response is read synchronously here before readTurnLoop starts.
-	if err := s.turnConn.SetDeadline(time.Now().Add(s.cfg.Timeout)); err != nil {
+	if err := s.turnConn.writeMessage(req, timeout); err != nil {
 		return err
 	}
-	defer s.turnConn.SetDeadline(time.Time{})
-
-	if err := writeSTUNMessage(s.turnConn, req); err != nil {
-		return err
-	}
-	res, err := readSTUNMessage(s.turnConn)
+	res, err := s.turnConn.readMessage(timeout)
 	if err != nil {
 		return err
 	}
@@ -1357,10 +1618,10 @@ func (s *udpSession) allocate() error {
 		return err
 	}
 
-	if err := writeSTUNMessage(s.turnConn, req2); err != nil {
+	if err := s.turnConn.writeMessage(req2, timeout); err != nil {
 		return err
 	}
-	res2, err := readSTUNMessage(s.turnConn)
+	res2, err := s.turnConn.readMessage(timeout)
 	if err != nil {
 		return err
 	}
@@ -1414,7 +1675,7 @@ func (s *udpSession) refreshAllocation() error {
 
 func (s *udpSession) readTurnLoop() {
 	for {
-		m, err := readSTUNMessage(s.turnConn)
+		m, err := s.turnConn.readMessage(0)
 		if err != nil {
 			s.close()
 			return
@@ -1464,6 +1725,32 @@ func (s *udpSession) handleDataIndication(m *stun.Message) {
 	_, _ = s.localUDP.WriteToUDP(pkt, caddr)
 }
 
+func (s *udpSession) acceptClientAddr(addr *net.UDPAddr) bool {
+	s.clientAddrMu.Lock()
+	defer s.clientAddrMu.Unlock()
+
+	if s.clientAddr == nil {
+		s.clientAddr = cloneUDPAddr(addr)
+		return true
+	}
+	return sameUDPAddr(s.clientAddr, addr)
+}
+
+func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	ip := append(net.IP(nil), addr.IP...)
+	return &net.UDPAddr{IP: ip, Port: addr.Port, Zone: addr.Zone}
+}
+
+func sameUDPAddr(a *net.UDPAddr, b *net.UDPAddr) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Port == b.Port && a.Zone == b.Zone && a.IP.Equal(b.IP)
+}
+
 func buildSocksUDPIPv4(ip net.IP, port int, payload []byte) []byte {
 	ip4 := ip.To4()
 	pkt := make([]byte, 10+len(payload))
@@ -1487,9 +1774,12 @@ func (s *udpSession) readLocalUDPLoop() {
 			return
 		}
 
-		s.clientAddrMu.Lock()
-		s.clientAddr = caddr
-		s.clientAddrMu.Unlock()
+		if !s.acceptClientAddr(caddr) {
+			if s.cfg.LogVerbose {
+				log.Printf("drop UDP packet from unexpected client %s", caddr.String())
+			}
+			continue
+		}
 
 		host, port, payload, err := parseSocksUDPPacket(buf[:n])
 		if err != nil {
@@ -1520,9 +1810,7 @@ func (s *udpSession) readLocalUDPLoop() {
 		msg.Add(AttrData, payload)
 
 		s.writeMu.Lock()
-		_ = s.turnConn.SetWriteDeadline(time.Now().Add(s.cfg.Timeout))
-		err = writeSTUNMessage(s.turnConn, msg)
-		_ = s.turnConn.SetWriteDeadline(time.Time{})
+		err = s.turnConn.writeMessage(msg, s.cfg.Timeout)
 		s.writeMu.Unlock()
 		if err != nil {
 			s.close()

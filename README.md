@@ -1,15 +1,16 @@
 # turnsocks
 
-`turnsocks` 是一个基于 TURN 服务器转发代理流量的小工具。它会在本机启动一个 SOCKS5 入口，浏览器、系统代理或其他客户端连到这个本地 SOCKS5 后，实际出站流量会通过配置的 TURN 节点中转出去。
+`turnsocks` 是一个利用 TURN 服务器转发代理流量的小工具。它会在本机启动一个 SOCKS5 入口，浏览器、系统代理或其他客户端连到这个本地 SOCKS5 后，实际出站流量会通过配置的 TURN 节点中转出去。
 
 SOCKS5 只是本地接入层，项目主体是 TURN 转发：
 
 - 本地监听：默认启动 `127.0.0.1:1080` SOCKS5 服务。
-- DNS 解析：收到域名目标时，先通过配置的 DoH 服务器解析为 IP，并在本地短暂缓存。
-- TCP 代理：SOCKS5 `CONNECT` 请求会解析目标地址，然后通过 TURN TCP allocation、`CONNECT` 和 `CONNECTION-BIND` 建立中转连接。
-- UDP 代理：SOCKS5 `UDP ASSOCIATE` 会创建本地 UDP 端口，解析目标地址后通过 TURN UDP allocation、`CREATE-PERMISSION` 和 `SEND/DATA` indication 转发 UDP 数据。
-- 节点池：支持配置多个 TURN 节点，失败节点会短暂冷却，后续请求自动尝试其他节点。
-- 面板：本地 Web 面板可添加、删除、切换 TURN 节点，并重启代理服务。
+- DoH 解析：收到域名目标时，先通过配置的 DoH 服务器解析为 IPv4，并在本地短暂缓存；同一个域名的并发查询会合并，避免瞬时重复请求。
+- TCP 代理：SOCKS5 `CONNECT` 会解析目标地址，然后通过 TURN TCP allocation、`CONNECT` 和 `CONNECTION-BIND` 建立中转连接。
+- UDP 代理：SOCKS5 `UDP ASSOCIATE` 会创建本地 UDP 端口，解析目标地址后通过 TURN allocation、`CREATE-PERMISSION` 和 `SEND/DATA` indication 转发 UDP 数据。
+- TURN 传输：UDP 代理会优先用 UDP 连接 TURN 服务器；如果该节点的 UDP 不通或不支持，会自动改用 TCP 连接 TURN 服务器继续承载 UDP 转发。这里的 UDP/TCP 指 `turnsocks -> TURN 服务器` 这一段，不是最终访问目标的流量类型。
+- 节点池：支持配置多个 TURN 节点，运行时优先使用最近成功的节点；失败节点和 UDP 传输失败会短暂冷却，后续请求自动尝试其他节点。
+- 面板：本地 Web 面板可添加、删除、切换 TURN 节点，并查看默认节点、运行中节点和服务状态。
 
 推送到 `main` 后，GitHub Actions 会自动刷新固定的 `latest` Release，生成 Linux amd64 和 Linux arm64 静态二进制。
 
@@ -53,7 +54,7 @@ TURN_SERVERS=user:password@turn.example.com:3478,backup.example.com:3478
 DOH=https://cloudflare-dns.com/dns-query
 ```
 
-`TURN_SERVERS` 用英文逗号分隔多个节点。每个节点可以写成 `host:port` 或 `user:password@host:port`。第一个节点是默认当前节点，面板切换节点时会把选中的节点移动到第一位并重启代理。
+`TURN_SERVERS` 用英文逗号分隔多个节点。每个节点可以写成 `host:port` 或 `user:password@host:port`。第一个节点是默认节点；实际运行中如果某个备用节点最近成功转发，程序会优先继续使用它。面板切换节点时会把选中的节点移动到第一位并重启代理。
 
 ## 常用命令
 
