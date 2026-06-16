@@ -41,6 +41,8 @@ const (
 	allocationLifetime            = 10 * time.Minute
 	allocationRefreshEvery        = 5 * time.Minute
 	turnUDPAttemptTimeout         = 3 * time.Second
+	tcpKeepAlivePeriod            = 30 * time.Second
+	refreshRetryDelay             = time.Second
 )
 
 type Config struct {
@@ -1020,6 +1022,19 @@ func writeSTUNMessage(conn net.Conn, m *stun.Message) error {
 	return writeAll(conn, m.Raw)
 }
 
+func dialTCPKeepAlive(addr string, timeout time.Duration) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: timeout, KeepAlive: tcpKeepAlivePeriod}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(tcpKeepAlivePeriod)
+	}
+	return conn, nil
+}
+
 func doSTUN(conn net.Conn, m *stun.Message, timeout time.Duration) (*stun.Message, error) {
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
@@ -1176,7 +1191,7 @@ func dialTurnTCP(cfg Config, targetIP net.IP, targetPort int) (net.Conn, net.Con
 
 func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, targetPort int) (net.Conn, net.Conn, func(), error) {
 	username, password := turn.auth()
-	ctrlConn, err := net.DialTimeout("tcp", turn.Addr, cfg.Timeout)
+	ctrlConn, err := dialTCPKeepAlive(turn.Addr, cfg.Timeout)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1187,38 +1202,33 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 		return nil, nil, nil, err
 	}
 
-	req := stun.New()
-	req.Type = stun.MessageType{Method: MethodConnect, Class: stun.ClassRequest}
-	req.TransactionID = stun.NewTransactionID()
-	if err := addXORPeerAddress(req, targetIP, targetPort); err != nil {
+	connectReq := stun.New()
+	connectReq.Type = stun.MessageType{Method: MethodConnect, Class: stun.ClassRequest}
+	connectReq.TransactionID = stun.NewTransactionID()
+	if err := addXORPeerAddress(connectReq, targetIP, targetPort); err != nil {
 		ctrlConn.Close()
 		return nil, nil, nil, err
 	}
 	if needAuth {
-		if err := addAuthToMessage(req, username, password, &realm, &nonce); err != nil {
+		if err := addAuthToMessage(connectReq, username, password, &realm, &nonce); err != nil {
 			ctrlConn.Close()
 			return nil, nil, nil, err
 		}
 	}
 
-	res, err := doSTUN(ctrlConn, req, cfg.Timeout)
+	connectRes, err := doSTUN(ctrlConn, connectReq, cfg.Timeout)
 	if err != nil {
 		ctrlConn.Close()
 		return nil, nil, nil, err
 	}
-	if res.Type.Class != stun.ClassSuccessResponse {
-		c, r := getErrorCode(res)
+
+	connID, err := getConnectionID(connectRes)
+	if err != nil {
 		ctrlConn.Close()
-		return nil, nil, nil, turnPeerError(fmt.Errorf("connect error %d %s", c, r))
+		return nil, nil, nil, err
 	}
 
-	connID, err := res.Get(AttrConnectionID)
-	if err != nil || len(connID) == 0 {
-		ctrlConn.Close()
-		return nil, nil, nil, errors.New("missing CONNECTION-ID")
-	}
-
-	dataConn, err := net.DialTimeout("tcp", turn.Addr, cfg.Timeout)
+	dataConn, err := dialTCPKeepAlive(turn.Addr, cfg.Timeout)
 	if err != nil {
 		ctrlConn.Close()
 		return nil, nil, nil, err
@@ -1256,6 +1266,18 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 	return dataConn, ctrlConn, func() { stopOnce.Do(func() { close(stopRefresh) }) }, nil
 }
 
+func getConnectionID(res *stun.Message) ([]byte, error) {
+	if res.Type.Class != stun.ClassSuccessResponse {
+		c, r := getErrorCode(res)
+		return nil, turnPeerError(fmt.Errorf("connect error %d %s", c, r))
+	}
+	connID, err := res.Get(AttrConnectionID)
+	if err != nil || len(connID) == 0 {
+		return nil, errors.New("missing CONNECTION-ID")
+	}
+	return connID, nil
+}
+
 func refreshTCPAllocation(ctrlConn net.Conn, dataConn net.Conn, cfg Config, turn turnServerConfig, username string, password string, realm stun.Realm, nonce stun.Nonce, needAuth bool, stop <-chan struct{}) {
 	ticker := time.NewTicker(allocationRefreshEvery)
 	defer ticker.Stop()
@@ -1264,11 +1286,21 @@ func refreshTCPAllocation(ctrlConn net.Conn, dataConn net.Conn, cfg Config, turn
 		select {
 		case <-ticker.C:
 			if err := refreshAllocation(ctrlConn, cfg, username, password, realm, nonce, needAuth); err != nil {
-				cfg.TurnPool.markFailure(turn, err)
-				log.Printf("TCP allocation refresh failed via %s: %v", turn.Addr, err)
-				_ = dataConn.Close()
-				_ = ctrlConn.Close()
-				return
+				select {
+				case <-time.After(refreshRetryDelay):
+				case <-stop:
+					return
+				}
+				if retryErr := refreshAllocation(ctrlConn, cfg, username, password, realm, nonce, needAuth); retryErr != nil {
+					cfg.TurnPool.markFailure(turn, retryErr)
+					log.Printf("TCP allocation refresh failed via %s after retry: %v", turn.Addr, errors.Join(err, retryErr))
+					_ = dataConn.Close()
+					_ = ctrlConn.Close()
+					return
+				}
+				if cfg.LogVerbose {
+					log.Printf("TCP allocation refresh recovered via %s after retry: %v", turn.Addr, err)
+				}
 			}
 		case <-stop:
 			return
@@ -1437,7 +1469,15 @@ func shorterTimeout(a time.Duration, b time.Duration) time.Duration {
 }
 
 func dialSTUNConn(network string, addr string, timeout time.Duration) (stunConn, error) {
-	conn, err := net.DialTimeout(network, addr, timeout)
+	var (
+		conn net.Conn
+		err  error
+	)
+	if network == "tcp" {
+		conn, err = dialTCPKeepAlive(addr, timeout)
+	} else {
+		conn, err = net.DialTimeout(network, addr, timeout)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1640,10 +1680,20 @@ func (s *udpSession) refreshLoop() {
 		select {
 		case <-ticker.C:
 			if err := s.refreshAllocation(); err != nil {
-				s.cfg.TurnPool.markFailure(s.turn, err)
-				log.Printf("UDP allocation refresh failed via %s: %v", s.turn.Addr, err)
-				s.close()
-				return
+				select {
+				case <-time.After(refreshRetryDelay):
+				case <-s.closed:
+					return
+				}
+				if retryErr := s.refreshAllocation(); retryErr != nil {
+					s.cfg.TurnPool.markFailure(s.turn, retryErr)
+					log.Printf("UDP allocation refresh failed via %s after retry: %v", s.turn.Addr, errors.Join(err, retryErr))
+					s.close()
+					return
+				}
+				if s.cfg.LogVerbose {
+					log.Printf("UDP allocation refresh recovered via %s after retry: %v", s.turn.Addr, err)
+				}
 			}
 		case <-s.closed:
 			return
