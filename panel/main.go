@@ -1014,7 +1014,7 @@ const indexHTML = `<!doctype html>
       if (!node) return '<div class="addr">暂无节点</div>';
       const status = node.current ? '<span class="status-pill status-pill-ok">运行中</span>' : (node.default ? '<span class="status-pill">默认</span>' : '<span class="status-pill">备用</span>');
       const auth = node.hasAuth ? '鉴权：' + escapeHTML(node.username || '已配置') : '无鉴权';
-      const selectBtn = node.default ? '' : '<button class="btn primary" data-action="select" data-server="' + escapeAttr(node.raw) + '">设为默认</button>';
+      const selectBtn = node.current ? '' : '<button class="btn primary" data-action="select" data-server="' + escapeAttr(node.raw) + '">切换到此节点</button>';
       return '<div><div class="addr">' + escapeHTML(node.raw) + '</div><div class="meta">' + status + '<span class="shell-chip">' + escapeHTML(auth) + '</span></div></div><div class="actions">' + selectBtn + '<button class="btn danger" data-action="delete" data-server="' + escapeAttr(node.raw) + '">删除</button></div>';
     }
     async function refresh() {
