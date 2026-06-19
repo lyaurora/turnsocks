@@ -6,13 +6,16 @@
 
 ## 工作方式
 
-- 本地默认监听 `127.0.0.1:1080`，提供 SOCKS5 TCP 和 UDP 入口。
+- 本地默认监听 `127.0.0.1:1080`，提供 SOCKS5 TCP/UDP 入口。
+- TCP 流量会通过 TURN 节点建立中转连接。
+- UDP 流量优先用 UDP 连接 TURN 服务器；这段不通时，会用 TCP 连接 TURN 服务器继续转发 UDP。
 - 域名目标会通过 DoH 解析为 IPv4，并做短暂缓存。
-- TCP 流量通过 TURN TCP allocation、`CONNECT`、`CONNECTION-BIND` 转发。
+- 支持多个 TURN 节点，面板可添加、删除、切换、测试节点，并保存最近一次测试结果。
+
+实现细节：
+
+- TCP 流量通过 TURN TCP allocation、`CONNECT`、`CONNECTION-BIND` 建立中转连接。
 - UDP 流量通过 TURN allocation、`CREATE-PERMISSION`、`SEND/DATA` 转发。
-- `turnsocks -> TURN 服务器` 这一段优先使用 UDP；如果 UDP 不可用，会改用 TCP 连接 TURN 服务器承载 UDP 转发。
-- 支持多个 TURN 节点，失败节点会短暂冷却，运行中会优先使用最近成功的节点。
-- 本地面板可添加、删除、切换、测试节点，并保存最近一次测试结果。
 
 ## 安装
 
@@ -41,8 +44,6 @@ curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh | sudo env INSTALL_DIR="$HOME/turn-proxy" PANEL_LISTEN=127.0.0.1:10808 sh
 ```
-
-通过 `sudo` 安装时，脚本会自动使用 `sudo` 前的用户运行服务。
 
 ## 面板
 
