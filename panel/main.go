@@ -28,7 +28,9 @@ const (
 type app struct {
 	configPath string
 	statePath  string
+	testPath   string
 	configMu   sync.Mutex
+	testMu     sync.Mutex
 }
 
 type proxyConfig struct {
@@ -38,12 +40,14 @@ type proxyConfig struct {
 }
 
 type serverInfo struct {
-	Raw      string `json:"raw"`
-	Addr     string `json:"addr"`
-	Username string `json:"username,omitempty"`
-	HasAuth  bool   `json:"hasAuth"`
-	Current  bool   `json:"current"`
-	Default  bool   `json:"default"`
+	Raw      string              `json:"raw"`
+	Addr     string              `json:"addr"`
+	Username string              `json:"username,omitempty"`
+	Password string              `json:"-"`
+	HasAuth  bool                `json:"hasAuth"`
+	Current  bool                `json:"current"`
+	Default  bool                `json:"default"`
+	Test     *serverTestResponse `json:"test,omitempty"`
 }
 
 type serviceInfo struct {
@@ -83,13 +87,18 @@ func main() {
 	if stPath == "" {
 		stPath = defaultStatePath(cfgPath)
 	}
-	a := &app{configPath: cfgPath, statePath: absPath(stPath)}
+	a := &app{
+		configPath: cfgPath,
+		statePath:  absPath(stPath),
+		testPath:   absPath(defaultTestResultsPath(cfgPath)),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", a.handleIndex)
 	mux.HandleFunc("/api/state", a.handleState)
 	mux.HandleFunc("/api/servers/add", a.handleAddServer)
 	mux.HandleFunc("/api/servers/select", a.handleSelectServer)
 	mux.HandleFunc("/api/servers/delete", a.handleDeleteServer)
+	mux.HandleFunc("/api/servers/test", a.handleServerTest)
 	mux.HandleFunc("/api/restart", a.handleRestart)
 
 	server := &http.Server{
@@ -118,6 +127,13 @@ func defaultStatePath(configPath string) string {
 		return filepath.Join(filepath.Dir(configPath), "turnsocks.state")
 	}
 	return "turnsocks.state"
+}
+
+func defaultTestResultsPath(configPath string) string {
+	if configPath != "" {
+		return filepath.Join(filepath.Dir(configPath), "turnsocks.tests.json")
+	}
+	return "turnsocks.tests.json"
 }
 
 func absPath(path string) string {
@@ -152,10 +168,11 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := readRuntimeState(a.statePath)
+	tests := a.readServerTests()
 	writeJSON(w, stateResponse{
 		Listen:  cfg.Listen,
 		DoH:     cfg.DoH,
-		Servers: buildServerInfo(cfg.Servers, state.CurrentAddr),
+		Servers: buildServerInfo(cfg.Servers, state.CurrentAddr, tests),
 		Service: readServiceInfo(),
 	})
 }
@@ -262,6 +279,7 @@ func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	a.deleteServerTest(req.Server)
 	if err := restartTurnsocks(); err != nil {
 		writeAPIError(w, fmt.Errorf("已删除，但重启失败：%w", err))
 		return
@@ -283,6 +301,47 @@ func (a *app) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, apiResponse{OK: true, Message: "已重启代理"})
+}
+
+func (a *app) handleServerTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	req, err := readServerRequest(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	server, err := normalizeServer(req.Server)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+
+	a.configMu.Lock()
+	cfg, err := readProxyConfig(a.configPath)
+	a.configMu.Unlock()
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if !containsServer(cfg.Servers, server) {
+		writeAPIError(w, errors.New("节点不存在"))
+		return
+	}
+
+	info, err := parseServer(server)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	result := a.testServer(r.Context(), server, info, cfg.DoH)
+	result.TestedAt = time.Now().Format(time.RFC3339)
+	if err := a.saveServerTest(server, result); err != nil {
+		result.Message += "，但保存失败：" + err.Error()
+	}
+	writeJSON(w, result)
 }
 
 func readServerRequest(r *http.Request) (serverRequest, error) {
@@ -390,11 +449,12 @@ func parseServer(raw string) (serverInfo, error) {
 	if at := strings.LastIndex(raw, "@"); at >= 0 {
 		cred := raw[:at]
 		addr = raw[at+1:]
-		user, _, ok := strings.Cut(cred, ":")
+		user, pass, ok := strings.Cut(cred, ":")
 		if !ok || user == "" {
 			return serverInfo{}, errors.New("鉴权格式应为 user:pass@host:port")
 		}
 		info.Username = user
+		info.Password = pass
 		info.HasAuth = true
 	}
 	addr = strings.TrimSpace(addr)
@@ -416,7 +476,7 @@ func parseServer(raw string) (serverInfo, error) {
 	return info, nil
 }
 
-func buildServerInfo(servers []string, currentAddr string) []serverInfo {
+func buildServerInfo(servers []string, currentAddr string, tests map[string]serverTestResponse) []serverInfo {
 	infos := make([]serverInfo, 0, len(servers))
 	for i, server := range servers {
 		info, err := parseServer(server)
@@ -424,6 +484,10 @@ func buildServerInfo(servers []string, currentAddr string) []serverInfo {
 			info = serverInfo{Raw: server, Addr: server}
 		}
 		info.Default = i == 0
+		if test, ok := tests[info.Raw]; ok {
+			t := test
+			info.Test = &t
+		}
 		infos = append(infos, info)
 	}
 
@@ -951,7 +1015,10 @@ const indexHTML = `<!doctype html>
     <section class="shell-window nodes-card">
       <div class="shell-bar">
         <strong>节点池</strong>
-        <span class="shell-chip">第一个为默认节点</span>
+        <div class="actions">
+          <button class="btn secondary" id="testAllBtn" type="button">测试全部</button>
+          <span class="shell-chip">第一个为默认节点</span>
+        </div>
       </div>
       <div class="panel-body">
         <div id="nodes" class="nodes"></div>
@@ -963,6 +1030,10 @@ const indexHTML = `<!doctype html>
   <script>
     const $ = (id) => document.getElementById(id);
     let busy = false;
+    let testAllBusy = false;
+    let latestServers = [];
+    const testResults = {};
+    const testingServers = new Set();
 
     function prefersDark() { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; }
     function applyTheme(mode) {
@@ -998,6 +1069,12 @@ const indexHTML = `<!doctype html>
       if (!res.ok || data.ok === false) throw new Error(data.message || '操作失败');
       return data;
     }
+    async function testAPI(server) {
+      const res = await fetch('/api/servers/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ server }) });
+      const data = await res.json().catch(() => ({ ok: false, message: '请求失败' }));
+      if (!res.ok) throw new Error(data.message || '测试失败');
+      return data;
+    }
     function escapeHTML(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
     function escapeAttr(s) { return escapeHTML(s).replace(/'/g, '&#39;'); }
     function displayHost(node) {
@@ -1010,16 +1087,51 @@ const indexHTML = `<!doctype html>
       const idx = addr.lastIndexOf(':');
       return idx > 0 ? addr.slice(0, idx) : addr;
     }
+    function ms(value) {
+      return Number.isFinite(value) ? value.toFixed(1) + 'ms' : '-';
+    }
+    function mbps(value) {
+      return Number.isFinite(value) ? value.toFixed(1) + 'M' : '-';
+    }
+    function formatTestTime(value) {
+      if (!value) return '';
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return '';
+      return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+    function testHTML(node) {
+      const server = node.raw;
+      if (testingServers.has(server)) return '<span class="status-pill status-pill-warn">测试中</span>';
+      const r = testResults[server] || node.test;
+      if (!r) return '';
+      const chips = [];
+      if (r.ok === false) chips.push('<span class="status-pill status-pill-danger">' + escapeHTML(r.message || '测试失败') + '</span>');
+      else chips.push('<span class="status-pill status-pill-ok">评分 ' + (r.score || 0) + '</span>');
+      const testedAt = formatTestTime(r.testedAt);
+      if (testedAt) chips.push('<span class="shell-chip">已测 ' + escapeHTML(testedAt) + '</span>');
+      if (r.tcpConnect && (r.tcpConnect.ok || r.tcpConnect.samples || r.tcpConnect.message)) chips.push('<span class="shell-chip">TCP ' + (r.tcpConnect.ok ? ms(r.tcpConnect.avgMs) : '失败') + '</span>');
+      if (r.socksUdp) chips.push('<span class="status-pill ' + (r.socksUdp.ok ? 'status-pill-ok' : 'status-pill-danger') + '">UDP 转发 ' + (r.socksUdp.ok ? 'OK' : '失败') + '</span>');
+      if (r.singleThread && (r.singleThread.ok || r.singleThread.bytes || r.singleThread.message)) chips.push('<span class="shell-chip">单线 ' + (r.singleThread.ok ? mbps(r.singleThread.mbps) : '失败') + '</span>');
+      if (r.multiThread && (r.multiThread.ok || r.multiThread.bytes || r.multiThread.message)) chips.push('<span class="shell-chip">多线 ' + (r.multiThread.ok ? mbps(r.multiThread.mbps) : '失败') + '</span>');
+      return chips.join('');
+    }
     function nodeHTML(node) {
       if (!node) return '<div class="addr">暂无节点</div>';
       const status = node.current ? '<span class="status-pill status-pill-ok">运行中</span>' : (node.default ? '<span class="status-pill">默认</span>' : '<span class="status-pill">备用</span>');
       const auth = node.hasAuth ? '鉴权：' + escapeHTML(node.username || '已配置') : '无鉴权';
-      const selectBtn = node.current ? '' : '<button class="btn primary" data-action="select" data-server="' + escapeAttr(node.raw) + '">切换到此节点</button>';
-      return '<div><div class="addr">' + escapeHTML(node.raw) + '</div><div class="meta">' + status + '<span class="shell-chip">' + escapeHTML(auth) + '</span></div></div><div class="actions">' + selectBtn + '<button class="btn danger" data-action="delete" data-server="' + escapeAttr(node.raw) + '">删除</button></div>';
+      const locked = busy || testAllBusy || testingServers.has(node.raw);
+      const disabled = locked ? ' disabled' : '';
+      const testBtn = '<button class="btn secondary" data-action="test" data-server="' + escapeAttr(node.raw) + '"' + disabled + '>测试</button>';
+      const selectBtn = node.current ? '' : '<button class="btn primary" data-action="select" data-server="' + escapeAttr(node.raw) + '"' + disabled + '>切换到此节点</button>';
+      return '<div><div class="addr">' + escapeHTML(node.raw) + '</div><div class="meta">' + status + '<span class="shell-chip">' + escapeHTML(auth) + '</span>' + testHTML(node) + '</div></div><div class="actions">' + testBtn + selectBtn + '<button class="btn danger" data-action="delete" data-server="' + escapeAttr(node.raw) + '"' + disabled + '>删除</button></div>';
+    }
+    function renderNodes(servers) {
+      $('nodes').innerHTML = servers.map(n => '<div class="node-row ' + (n.current ? 'current' : '') + '">' + nodeHTML(n) + '</div>').join('') || '<div class="node-row"><div class="addr">暂无节点</div></div>';
     }
     async function refresh() {
       const res = await fetch('/api/state');
       const data = await res.json();
+      latestServers = data.servers || [];
       const current = data.servers.find(n => n.current) || data.servers[0];
       const active = !!data.service.active;
       $('servicePill').className = 'status-pill ' + (active ? 'status-pill-warn' : 'status-pill-danger');
@@ -1030,7 +1142,7 @@ const indexHTML = `<!doctype html>
       $('countValue').textContent = data.servers.length + ' 节点';
       $('pidValue').textContent = data.service.pid ? 'pid ' + data.service.pid : 'no pid';
       $('dohValue').textContent = data.doh || '-';
-      $('nodes').innerHTML = data.servers.map(n => '<div class="node-row ' + (n.current ? 'current' : '') + '">' + nodeHTML(n) + '</div>').join('') || '<div class="node-row"><div class="addr">暂无节点</div></div>';
+      renderNodes(latestServers);
     }
     function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
     function errorMessage(err) { return err && err.message === 'Failed to fetch' ? '连接面板失败' : (err.message || '操作失败'); }
@@ -1051,7 +1163,42 @@ const indexHTML = `<!doctype html>
         refreshWithRetry().catch(() => setTimeout(() => refresh().catch(() => {}), 2500));
       }
       catch (err) { toast(errorMessage(err)); }
-      finally { busy = false; document.querySelectorAll('button').forEach(b => b.disabled = false); }
+      finally {
+        busy = false;
+        document.querySelectorAll('button').forEach(b => b.disabled = false);
+        renderNodes(latestServers);
+      }
+    }
+    async function testServer(server) {
+      if (!server || testingServers.has(server)) return;
+      testingServers.add(server);
+      renderNodes(latestServers);
+      try {
+        const res = await testAPI(server);
+        testResults[server] = res;
+        toast(res.message || '测试完成');
+      }
+      catch (err) {
+        testResults[server] = { ok: false, message: errorMessage(err) };
+        toast(errorMessage(err));
+      }
+      finally {
+        testingServers.delete(server);
+        renderNodes(latestServers);
+      }
+    }
+    async function testAllServers() {
+      if (testAllBusy || testingServers.size > 0) return;
+      testAllBusy = true;
+      $('testAllBtn').disabled = true;
+      try {
+        for (const node of latestServers) await testServer(node.raw);
+      }
+      finally {
+        testAllBusy = false;
+        $('testAllBtn').disabled = false;
+        renderNodes(latestServers);
+      }
     }
     $('addBtn').addEventListener('click', () => run(async () => {
       const input = $('serverInput');
@@ -1061,11 +1208,13 @@ const indexHTML = `<!doctype html>
       return res;
     }));
     $('restartBtn').addEventListener('click', () => run(() => api('/api/restart')));
+    $('testAllBtn').addEventListener('click', () => testAllServers());
     $('serverInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('addBtn').click(); });
     $('nodes').addEventListener('click', e => {
       const btn = e.target.closest('button[data-action]');
       if (!btn) return;
       const server = btn.dataset.server;
+      if (btn.dataset.action === 'test') testServer(server);
       if (btn.dataset.action === 'select') run(() => api('/api/servers/select', { server }));
       if (btn.dataset.action === 'delete') run(() => api('/api/servers/delete', { server }));
     });
