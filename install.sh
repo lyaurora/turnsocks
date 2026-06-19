@@ -2,16 +2,40 @@
 set -eu
 
 APP_NAME=turnsocks
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-INSTALL_DIR=${INSTALL_DIR:-$SCRIPT_DIR}
-RUN_USER=${RUN_USER:-${SUDO_USER:-$(id -un)}}
+SCRIPT_FROM_STDIN=0
+case "$0" in
+  sh|-sh|bash|-bash|dash|-dash)
+    SCRIPT_FROM_STDIN=1
+    SCRIPT_DIR=$(pwd)
+    ;;
+  *)
+    SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    ;;
+esac
+SOURCE_CHECKOUT=0
+if [ "$SCRIPT_FROM_STDIN" = "0" ] && [ -f "$SCRIPT_DIR/go.mod" ] && [ -f "$SCRIPT_DIR/main.go" ]; then
+  SOURCE_CHECKOUT=1
+fi
+if [ -z "${INSTALL_DIR:-}" ]; then
+  if [ "$SOURCE_CHECKOUT" = "1" ]; then
+    INSTALL_DIR=$SCRIPT_DIR
+  else
+    INSTALL_DIR=/opt/turn-proxy
+  fi
+fi
+if [ -z "${RUN_USER:-}" ]; then
+  RUN_USER=${SUDO_USER:-$(id -un)}
+fi
 PANEL_LISTEN=${PANEL_LISTEN:-127.0.0.1:10808}
 CONFIG_FILE=${CONFIG_FILE:-$INSTALL_DIR/config.env}
 SYSTEMCTL=$(command -v systemctl || true)
 GO_CMD=${GO_CMD:-go}
-SOURCE_CONFIG=${SOURCE_CONFIG:-$SCRIPT_DIR/config.env}
+if [ -z "${SOURCE_CONFIG:-}" ] && [ "$SOURCE_CHECKOUT" = "1" ]; then
+  SOURCE_CONFIG=$SCRIPT_DIR/config.env
+fi
 RELEASE_REPO=${RELEASE_REPO:-lyaurora/turnsocks}
 RELEASE_TAG=${RELEASE_TAG:-latest}
+BUILD_FROM_SOURCE=${BUILD_FROM_SOURCE:-0}
 
 SUDO=
 if [ "$(id -u)" -ne 0 ]; then
@@ -41,7 +65,9 @@ run_root() {
 
 INSTALL_DIR=$(abs_path "$INSTALL_DIR")
 CONFIG_FILE=$(abs_path "$CONFIG_FILE")
-SOURCE_CONFIG=$(abs_path "$SOURCE_CONFIG")
+if [ -n "${SOURCE_CONFIG:-}" ]; then
+  SOURCE_CONFIG=$(abs_path "$SOURCE_CONFIG")
+fi
 
 target_platform() {
   os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -78,6 +104,34 @@ set_runtime_owner() {
   run_root chown "$RUN_USER" "$1"
 }
 
+write_config_values() {
+  listen_addr=$1
+  turn_servers=$2
+  doh_url=$3
+  tmp_config=$(mktemp)
+  cat > "$tmp_config" <<EOF
+LISTEN=$listen_addr
+TURN_SERVERS=$turn_servers
+DOH=$doh_url
+EOF
+  if install -m 0600 "$tmp_config" "$CONFIG_FILE" 2>/dev/null; then
+    :
+  else
+    run_root install -m 0600 "$tmp_config" "$CONFIG_FILE"
+  fi
+  rm -f "$tmp_config"
+  set_runtime_owner "$CONFIG_FILE"
+}
+
+create_default_config() {
+  listen_addr=${LISTEN:-127.0.0.1:1080}
+  doh_url=${DOH:-https://cloudflare-dns.com/dns-query}
+  turn_servers=${TURN_SERVERS:-127.0.0.1:3478}
+
+  write_config_values "$listen_addr" "$turn_servers" "$doh_url"
+  echo "Created $CONFIG_FILE."
+}
+
 install_config() {
   if [ -f "$CONFIG_FILE" ]; then
     chmod 600 "$CONFIG_FILE" 2>/dev/null || run_root chmod 600 "$CONFIG_FILE"
@@ -85,25 +139,22 @@ install_config() {
     return 0
   fi
 
-  if [ "$SOURCE_CONFIG" != "$CONFIG_FILE" ] && [ -f "$SOURCE_CONFIG" ]; then
-    install_file="$SOURCE_CONFIG"
-    created_from_example=0
+  if [ -n "${SOURCE_CONFIG:-}" ] && [ "$SOURCE_CONFIG" != "$CONFIG_FILE" ] && [ -f "$SOURCE_CONFIG" ]; then
+    if install -m 0600 "$SOURCE_CONFIG" "$CONFIG_FILE" 2>/dev/null; then
+      :
+    else
+      run_root install -m 0600 "$SOURCE_CONFIG" "$CONFIG_FILE"
+    fi
   else
-    install_file="$SCRIPT_DIR/config.example.env"
-    created_from_example=1
+    create_default_config
   fi
-
-  if install -m 0600 "$install_file" "$CONFIG_FILE" 2>/dev/null; then
+  if [ -f "$CONFIG_FILE" ]; then
     :
   else
-    run_root install -m 0600 "$install_file" "$CONFIG_FILE"
-  fi
-  set_runtime_owner "$CONFIG_FILE"
-
-  if [ "$created_from_example" -eq 1 ]; then
-    echo "Created $CONFIG_FILE. Edit it with real TURN_SERVERS, then run this script again." >&2
+    echo "Failed to create $CONFIG_FILE." >&2
     exit 1
   fi
+  set_runtime_owner "$CONFIG_FILE"
 }
 
 install_binary() {
@@ -147,7 +198,7 @@ download_asset() {
   dest=$2
 
   if command -v gh >/dev/null 2>&1 && gh auth status -h github.com >/dev/null 2>&1; then
-    gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" --pattern "$asset" --dir "$dest" --clobber >/dev/null
+    gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" --pattern "$asset" --dir "$dest" --clobber >/dev/null || return 1
     return 0
   fi
 
@@ -184,9 +235,8 @@ ensure_install_dir
 set_runtime_owner "$INSTALL_DIR"
 install_config
 
-if grep -Eq 'turn\.example\.com|user:password|CHANGE_ME' "$CONFIG_FILE"; then
-  echo "$CONFIG_FILE still contains example values. Replace them before installing." >&2
-  exit 1
+if grep -Eq 'turn\.example\.com|user:password|CHANGE_ME|127\.0\.0\.1:3478' "$CONFIG_FILE"; then
+  echo "$CONFIG_FILE contains placeholder TURN_SERVERS. Add a real TURN node in the panel after installation." >&2
 fi
 
 cd "$SCRIPT_DIR"
@@ -194,22 +244,32 @@ TARGET=${TARGET:-$(target_platform)}
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 
-if download_release_binaries "$tmp_dir/release"; then
-  install_binary "$tmp_dir/release/turnsocks-$TARGET" "$INSTALL_DIR/turnsocks"
-  install_binary "$tmp_dir/release/turnsocks-panel-$TARGET" "$INSTALL_DIR/turnsocks-panel"
-else
+if [ "$BUILD_FROM_SOURCE" = "1" ]; then
+  if [ "$SOURCE_CHECKOUT" != "1" ]; then
+    echo "BUILD_FROM_SOURCE=1 must be run from a source checkout." >&2
+    exit 1
+  fi
   if ! command -v "$GO_CMD" >/dev/null 2>&1; then
     if [ -x "/home/$RUN_USER/go/bin/go" ]; then
       GO_CMD="/home/$RUN_USER/go/bin/go"
     else
-      echo "No prebuilt binaries found for $TARGET and Go is not installed." >&2
+      echo "BUILD_FROM_SOURCE=1 requires Go, but Go is not installed." >&2
       exit 1
     fi
   fi
   CGO_ENABLED=0 "$GO_CMD" build -trimpath -ldflags "-s -w" -o "$tmp_dir/turnsocks" .
   CGO_ENABLED=0 "$GO_CMD" build -trimpath -ldflags "-s -w" -o "$tmp_dir/turnsocks-panel" ./panel
+  installed_from="local source checkout"
   install_binary "$tmp_dir/turnsocks" "$INSTALL_DIR/turnsocks"
   install_binary "$tmp_dir/turnsocks-panel" "$INSTALL_DIR/turnsocks-panel"
+elif download_release_binaries "$tmp_dir/release"; then
+  installed_from="GitHub Release $RELEASE_TAG ($TARGET)"
+  install_binary "$tmp_dir/release/turnsocks-$TARGET" "$INSTALL_DIR/turnsocks"
+  install_binary "$tmp_dir/release/turnsocks-panel-$TARGET" "$INSTALL_DIR/turnsocks-panel"
+else
+  echo "No prebuilt binaries found for $TARGET in $RELEASE_REPO@$RELEASE_TAG." >&2
+  echo "For development from a source checkout, rerun with BUILD_FROM_SOURCE=1." >&2
+  exit 1
 fi
 run_root chmod 755 "$INSTALL_DIR/turnsocks" "$INSTALL_DIR/turnsocks-panel"
 set_runtime_owner "$CONFIG_FILE"
@@ -269,8 +329,10 @@ run_root install -m 0644 "$tmp_proxy" /etc/systemd/system/turnsocks.service
 run_root install -m 0644 "$tmp_panel" /etc/systemd/system/turnsocks-panel.service
 run_root install -m 0440 "$tmp_sudoers" /etc/sudoers.d/turnsocks-panel
 run_root systemctl daemon-reload
-run_root systemctl enable --now turnsocks.service turnsocks-panel.service
+run_root systemctl enable turnsocks.service turnsocks-panel.service
+run_root systemctl restart turnsocks.service turnsocks-panel.service
 
 echo "Installed $APP_NAME."
+echo "Binaries: $installed_from"
 echo "Proxy: $CONFIG_FILE"
 echo "Panel: http://$PANEL_LISTEN"
