@@ -43,6 +43,7 @@ const (
 	allocationRefreshEvery        = 5 * time.Minute
 	turnUDPAttemptTimeout         = 3 * time.Second
 	tcpKeepAlivePeriod            = 30 * time.Second
+	udpSocketBufferSize           = 512 << 10
 	refreshRetryDelay             = time.Second
 )
 
@@ -1674,8 +1675,9 @@ type udpSession struct {
 	writeMu      sync.Mutex
 	pendingMu    sync.Mutex
 	pending      map[string]chan *stun.Message
-	permissions  map[string]time.Time
+	permissions  map[[4]byte]time.Time
 	permissionMu sync.Mutex
+	socksUDPBuf  []byte
 	clientAddrMu sync.RWMutex
 	clientAddr   *net.UDPAddr
 	closed       chan struct{}
@@ -1688,6 +1690,7 @@ func handleUDPAssociate(clientTCP net.Conn, cfg Config) {
 		_ = writeSocksReply(clientTCP, 0x01, "0.0.0.0", 0)
 		return
 	}
+	tuneUDPConn(localUDP)
 
 	bindPort := localUDP.LocalAddr().(*net.UDPAddr).Port
 	s, turnAddr, err := newUDPSession(cfg, clientTCP, localUDP)
@@ -1773,7 +1776,7 @@ func newUDPSessionWithNetwork(cfg Config, clientTCP net.Conn, localUDP *net.UDPC
 		turnConn:    conn,
 		turnNetwork: network,
 		pending:     make(map[string]chan *stun.Message),
-		permissions: make(map[string]time.Time),
+		permissions: make(map[[4]byte]time.Time),
 		closed:      make(chan struct{}),
 	}
 	allocateTimeout := cfg.Timeout
@@ -1806,18 +1809,32 @@ func dialSTUNConn(network string, addr string, timeout time.Duration) (stunConn,
 		conn, err = dialTCPKeepAlive(addr, timeout)
 	} else {
 		conn, err = net.DialTimeout(network, addr, timeout)
+		if err == nil {
+			tuneUDPConn(conn)
+		}
 	}
 	if err != nil {
 		return nil, err
 	}
 	switch network {
 	case "udp":
-		return &udpSTUNConn{conn: conn}, nil
+		return &udpSTUNConn{conn: conn, readBuf: make([]byte, 65535)}, nil
 	case "tcp":
 		return &tcpSTUNConn{conn: conn}, nil
 	default:
 		_ = conn.Close()
 		return nil, fmt.Errorf("unsupported STUN network %q", network)
+	}
+}
+
+func tuneUDPConn(conn net.Conn) {
+	type bufferSetter interface {
+		SetReadBuffer(int) error
+		SetWriteBuffer(int) error
+	}
+	if c, ok := conn.(bufferSetter); ok {
+		_ = c.SetReadBuffer(udpSocketBufferSize)
+		_ = c.SetWriteBuffer(udpSocketBufferSize)
 	}
 }
 
@@ -1856,7 +1873,8 @@ func (c *tcpSTUNConn) close() error {
 }
 
 type udpSTUNConn struct {
-	conn net.Conn
+	conn    net.Conn
+	readBuf []byte
 }
 
 func (c *udpSTUNConn) readMessage(timeout time.Duration) (*stun.Message, error) {
@@ -1867,12 +1885,14 @@ func (c *udpSTUNConn) readMessage(timeout time.Duration) (*stun.Message, error) 
 		defer c.conn.SetReadDeadline(time.Time{})
 	}
 
-	buf := make([]byte, 65535)
-	n, err := c.conn.Read(buf)
+	if c.readBuf == nil {
+		c.readBuf = make([]byte, 65535)
+	}
+	n, err := c.conn.Read(c.readBuf)
 	if err != nil {
 		return nil, err
 	}
-	return decodeSTUNMessage(buf[:n])
+	return decodeSTUNMessage(c.readBuf[:n])
 }
 
 func (c *udpSTUNConn) writeMessage(m *stun.Message, timeout time.Duration) error {
@@ -2100,7 +2120,7 @@ func (s *udpSession) handleDataIndication(m *stun.Message) {
 		return
 	}
 
-	pkt := buildSocksUDPIPv4(ip, port, data)
+	pkt := s.buildSocksUDPIPv4(ip, port, data)
 	_, _ = s.localUDP.WriteToUDP(pkt, caddr)
 }
 
@@ -2130,9 +2150,13 @@ func sameUDPAddr(a *net.UDPAddr, b *net.UDPAddr) bool {
 	return a.Port == b.Port && a.Zone == b.Zone && a.IP.Equal(b.IP)
 }
 
-func buildSocksUDPIPv4(ip net.IP, port int, payload []byte) []byte {
+func (s *udpSession) buildSocksUDPIPv4(ip net.IP, port int, payload []byte) []byte {
 	ip4 := ip.To4()
-	pkt := make([]byte, 10+len(payload))
+	size := 10 + len(payload)
+	if cap(s.socksUDPBuf) < size {
+		s.socksUDPBuf = make([]byte, size)
+	}
+	pkt := s.socksUDPBuf[:size]
 	pkt[0] = 0
 	pkt[1] = 0
 	pkt[2] = 0
@@ -2160,17 +2184,19 @@ func (s *udpSession) readLocalUDPLoop() {
 			continue
 		}
 
-		host, port, payload, err := parseSocksUDPPacket(buf[:n])
+		ip, host, port, payload, err := parseSocksUDPPacket(buf[:n])
 		if err != nil {
 			continue
 		}
 
-		ip, err := resolveDoH(host, s.cfg)
-		if err != nil {
-			if s.cfg.LogVerbose {
-				log.Printf("UDP resolve failed %s: %v", host, err)
+		if ip == nil {
+			ip, err = resolveDoH(host, s.cfg)
+			if err != nil {
+				if s.cfg.LogVerbose {
+					log.Printf("UDP resolve failed %s: %v", host, err)
+				}
+				continue
 			}
-			continue
 		}
 
 		if err := s.ensurePermission(ip); err != nil {
@@ -2198,55 +2224,58 @@ func (s *udpSession) readLocalUDPLoop() {
 	}
 }
 
-func parseSocksUDPPacket(pkt []byte) (string, int, []byte, error) {
+func parseSocksUDPPacket(pkt []byte) (net.IP, string, int, []byte, error) {
 	if len(pkt) < 4 {
-		return "", 0, nil, errors.New("short UDP packet")
+		return nil, "", 0, nil, errors.New("short UDP packet")
 	}
 	if pkt[0] != 0 || pkt[1] != 0 || pkt[2] != 0 {
-		return "", 0, nil, errors.New("fragmented UDP is not supported")
+		return nil, "", 0, nil, errors.New("fragmented UDP is not supported")
 	}
 
 	atyp := pkt[3]
 	switch atyp {
 	case 0x01:
 		if len(pkt) < 10 {
-			return "", 0, nil, errors.New("short IPv4 packet")
+			return nil, "", 0, nil, errors.New("short IPv4 packet")
 		}
-		host := net.IP(pkt[4:8]).String()
+		ip := net.IP(pkt[4:8])
 		port := int(binary.BigEndian.Uint16(pkt[8:10]))
 		if port == 0 {
-			return "", 0, nil, errors.New("invalid UDP port 0")
+			return nil, "", 0, nil, errors.New("invalid UDP port 0")
 		}
-		return host, port, pkt[10:], nil
+		return ip, "", port, pkt[10:], nil
 
 	case 0x03:
 		if len(pkt) < 5 {
-			return "", 0, nil, errors.New("short domain packet")
+			return nil, "", 0, nil, errors.New("short domain packet")
 		}
 		l := int(pkt[4])
 		if len(pkt) < 5+l+2 {
-			return "", 0, nil, errors.New("bad domain packet")
+			return nil, "", 0, nil, errors.New("bad domain packet")
 		}
 		if l == 0 {
-			return "", 0, nil, errors.New("empty domain name")
+			return nil, "", 0, nil, errors.New("empty domain name")
 		}
 		host := string(pkt[5 : 5+l])
 		port := int(binary.BigEndian.Uint16(pkt[5+l : 5+l+2]))
 		if port == 0 {
-			return "", 0, nil, errors.New("invalid UDP port 0")
+			return nil, "", 0, nil, errors.New("invalid UDP port 0")
 		}
-		return host, port, pkt[5+l+2:], nil
+		return nil, host, port, pkt[5+l+2:], nil
 
 	case 0x04:
-		return "", 0, nil, errors.New("IPv6 is not supported")
+		return nil, "", 0, nil, errors.New("IPv6 is not supported")
 
 	default:
-		return "", 0, nil, errors.New("unsupported ATYP")
+		return nil, "", 0, nil, errors.New("unsupported ATYP")
 	}
 }
 
 func (s *udpSession) ensurePermission(ip net.IP) error {
-	key := ip.String()
+	key, ok := permissionKey(ip)
+	if !ok {
+		return errors.New("only IPv4 is supported")
+	}
 
 	s.permissionMu.Lock()
 	exp, ok := s.permissions[key]
@@ -2282,4 +2311,12 @@ func (s *udpSession) ensurePermission(ip net.IP) error {
 	s.permissionMu.Unlock()
 
 	return nil
+}
+
+func permissionKey(ip net.IP) ([4]byte, bool) {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return [4]byte{}, false
+	}
+	return [4]byte{ip4[0], ip4[1], ip4[2], ip4[3]}, true
 }
