@@ -1384,16 +1384,18 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 		return nil, nil, err
 	}
 	dataConn, err := allocation.connect(targetIP, targetPort)
-	allocation.finishConnect()
 	if err != nil {
+		allocation.finishConnect()
 		cfg.TCPAllocs.release(turn, allocation, peer)
 		cfg.TCPAllocs.invalidate(turn, allocation)
 		return nil, nil, err
 	}
 	if !allocation.trackDataConn(dataConn) {
+		allocation.finishConnect()
 		cfg.TCPAllocs.release(turn, allocation, peer)
 		return nil, nil, errors.New("TCP allocation is closed")
 	}
+	allocation.finishConnect()
 	return dataConn, func() {
 		allocation.untrackDataConn(dataConn)
 		cfg.TCPAllocs.release(turn, allocation, peer)
@@ -1557,7 +1559,7 @@ func (a *tcpAllocation) hasActivePeers() bool {
 
 func (a *tcpAllocation) trackDataConn(conn net.Conn) bool {
 	a.dataMu.Lock()
-	if a.closeData {
+	if a.closeData || a.closed.Load() {
 		a.dataMu.Unlock()
 		_ = conn.Close()
 		return false
