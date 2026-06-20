@@ -107,6 +107,9 @@ type tcpAllocation struct {
 	peerMu      sync.Mutex
 	activePeers map[string]struct{}
 	connecting  int
+	dataMu      sync.Mutex
+	dataConns   map[net.Conn]struct{}
+	closeData   bool
 }
 
 type turnAttemptError struct {
@@ -1366,7 +1369,14 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 			allocation.close()
 			return nil, nil, err
 		}
-		return dataConn, allocation.close, nil
+		if !allocation.trackDataConn(dataConn) {
+			allocation.close()
+			return nil, nil, errors.New("TCP allocation is closed")
+		}
+		return dataConn, func() {
+			allocation.untrackDataConn(dataConn)
+			allocation.close()
+		}, nil
 	}
 
 	allocation, err := cfg.TCPAllocs.getOrCreate(cfg, turn, peer)
@@ -1380,7 +1390,14 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 		cfg.TCPAllocs.invalidate(turn, allocation)
 		return nil, nil, err
 	}
-	return dataConn, func() { cfg.TCPAllocs.release(turn, allocation, peer) }, nil
+	if !allocation.trackDataConn(dataConn) {
+		cfg.TCPAllocs.release(turn, allocation, peer)
+		return nil, nil, errors.New("TCP allocation is closed")
+	}
+	return dataConn, func() {
+		allocation.untrackDataConn(dataConn)
+		cfg.TCPAllocs.release(turn, allocation, peer)
+	}, nil
 }
 
 func tcpPeerKey(ip net.IP, port int) string {
@@ -1411,6 +1428,7 @@ func newTCPAllocation(cfg Config, turn turnServerConfig) (*tcpAllocation, error)
 		needAuth:    needAuth,
 		stop:        make(chan struct{}),
 		activePeers: make(map[string]struct{}),
+		dataConns:   make(map[net.Conn]struct{}),
 	}
 	go a.refreshLoop()
 	return a, nil
@@ -1537,6 +1555,39 @@ func (a *tcpAllocation) hasActivePeers() bool {
 	return len(a.activePeers) > 0
 }
 
+func (a *tcpAllocation) trackDataConn(conn net.Conn) bool {
+	a.dataMu.Lock()
+	if a.closeData {
+		a.dataMu.Unlock()
+		_ = conn.Close()
+		return false
+	}
+	a.dataConns[conn] = struct{}{}
+	a.dataMu.Unlock()
+	return true
+}
+
+func (a *tcpAllocation) untrackDataConn(conn net.Conn) {
+	a.dataMu.Lock()
+	delete(a.dataConns, conn)
+	a.dataMu.Unlock()
+}
+
+func (a *tcpAllocation) closeTrackedDataConns() {
+	var conns []net.Conn
+	a.dataMu.Lock()
+	a.closeData = true
+	for conn := range a.dataConns {
+		conns = append(conns, conn)
+		delete(a.dataConns, conn)
+	}
+	a.dataMu.Unlock()
+
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
 func (a *tcpAllocation) close() {
 	a.closeOnce.Do(func() {
 		a.closed.Store(true)
@@ -1562,6 +1613,7 @@ func (a *tcpAllocation) refreshLoop() {
 					a.cfg.TurnPool.markFailure(a.turn, retryErr)
 					log.Printf("TCP allocation refresh failed via %s after retry: %v", a.turn.Addr, errors.Join(err, retryErr))
 					a.close()
+					a.closeTrackedDataConns()
 					return
 				}
 				if a.cfg.LogVerbose {
