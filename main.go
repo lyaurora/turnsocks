@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/stun"
@@ -58,6 +59,7 @@ type Config struct {
 	DNSTTL       time.Duration
 	Timeout      time.Duration
 	LogVerbose   bool
+	TCPAllocs    *tcpAllocationPool
 }
 
 type turnServerState struct {
@@ -80,6 +82,31 @@ type turnPool struct {
 	cooldown  time.Duration
 	statePath string
 	current   string
+}
+
+// A TURN TCP allocation may carry multiple peers, but some servers reject
+// concurrent CONNECT requests to the same peer with 446 Connection Already Exists.
+type tcpAllocationPool struct {
+	mu     sync.Mutex
+	allocs map[string][]*tcpAllocation
+}
+
+type tcpAllocation struct {
+	cfg         Config
+	turn        turnServerConfig
+	username    string
+	password    string
+	ctrlConn    net.Conn
+	realm       stun.Realm
+	nonce       stun.Nonce
+	needAuth    bool
+	stop        chan struct{}
+	ctrlMu      sync.Mutex
+	closed      atomic.Bool
+	closeOnce   sync.Once
+	peerMu      sync.Mutex
+	activePeers map[string]struct{}
+	connecting  int
 }
 
 type turnAttemptError struct {
@@ -181,6 +208,7 @@ func main() {
 		log.Fatal("missing TURN servers, set TURN_SERVERS in config.env")
 	}
 	cfg.TurnPool = newTurnPool(cfg.TurnServers, cfg.TurnCooldown, cfg.StatePath)
+	cfg.TCPAllocs = newTCPAllocationPool()
 	cfg.TurnPool.markSuccess(cfg.TurnServers[0])
 	dohURL, err := url.ParseRequestURI(cfg.DoH)
 	if err != nil {
@@ -408,6 +436,138 @@ func newTurnPool(servers []turnServerConfig, cooldown time.Duration, statePath s
 	return p
 }
 
+func newTCPAllocationPool() *tcpAllocationPool {
+	return &tcpAllocationPool{allocs: make(map[string][]*tcpAllocation)}
+}
+
+func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, error) {
+	key := turn.String()
+
+	p.mu.Lock()
+	p.pruneClosedLocked(key)
+	for _, a := range p.allocs[key] {
+		if a.tryReservePeer(peer) {
+			p.mu.Unlock()
+			return a, nil
+		}
+	}
+	p.mu.Unlock()
+
+	a, err := newReservedTCPAllocation(cfg, turn, peer)
+	if err != nil {
+		return nil, err
+	}
+
+	p.mu.Lock()
+	p.pruneClosedLocked(key)
+	for _, existing := range p.allocs[key] {
+		if existing.tryReservePeer(peer) {
+			p.mu.Unlock()
+			a.close()
+			return existing, nil
+		}
+	}
+	p.allocs[key] = append(p.allocs[key], a)
+	p.mu.Unlock()
+	return a, nil
+}
+
+func (p *tcpAllocationPool) release(turn turnServerConfig, allocation *tcpAllocation, peer string) {
+	if p == nil || allocation == nil {
+		return
+	}
+	allocation.releasePeer(peer)
+
+	key := turn.String()
+	var closeIdle []*tcpAllocation
+	p.mu.Lock()
+	p.pruneClosedLocked(key)
+	allocs := p.allocs[key]
+	next := allocs[:0]
+	keptIdle := false
+	for _, a := range allocs {
+		if a.isClosed() {
+			continue
+		}
+		if a.hasActivePeers() {
+			next = append(next, a)
+			continue
+		}
+		if !keptIdle {
+			keptIdle = true
+			next = append(next, a)
+			continue
+		}
+		closeIdle = append(closeIdle, a)
+	}
+	if len(next) == 0 {
+		delete(p.allocs, key)
+	} else {
+		p.allocs[key] = next
+	}
+	p.mu.Unlock()
+
+	for _, a := range closeIdle {
+		a.close()
+	}
+}
+
+func (p *tcpAllocationPool) pruneClosedLocked(key string) {
+	allocs := p.allocs[key]
+	if len(allocs) == 0 {
+		return
+	}
+	active := allocs[:0]
+	for _, a := range allocs {
+		if !a.isClosed() {
+			active = append(active, a)
+		}
+	}
+	if len(active) == 0 {
+		delete(p.allocs, key)
+		return
+	}
+	p.allocs[key] = active
+}
+
+func (p *tcpAllocationPool) invalidate(turn turnServerConfig, allocation *tcpAllocation) {
+	if p == nil || allocation == nil {
+		return
+	}
+	key := turn.String()
+	p.mu.Lock()
+	allocs := p.allocs[key]
+	for i, a := range allocs {
+		if a == allocation {
+			copy(allocs[i:], allocs[i+1:])
+			allocs = allocs[:len(allocs)-1]
+			if len(allocs) == 0 {
+				delete(p.allocs, key)
+			} else {
+				p.allocs[key] = allocs
+			}
+			p.mu.Unlock()
+			allocation.close()
+			return
+		}
+	}
+	p.pruneClosedLocked(key)
+	p.mu.Unlock()
+	allocation.close()
+}
+
+func newReservedTCPAllocation(cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, error) {
+	a, err := newTCPAllocation(cfg, turn)
+	if err != nil {
+		return nil, err
+	}
+	if !a.tryReservePeer(peer) {
+		a.close()
+		return nil, errors.New("TCP allocation is not available")
+	}
+	return a, nil
+}
+
 func (p *turnPool) candidates() []turnServerConfig {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -523,6 +683,11 @@ func isTurnServerFailure(err error) bool {
 
 func turnPeerError(err error) error {
 	return &turnAttemptError{err: err, serverFailure: false}
+}
+
+func isTimeoutError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func writeRuntimeState(path string, currentAddr string) error {
@@ -737,7 +902,7 @@ func handleTCPConnect(client net.Conn, cfg Config, req socksRequest) {
 		log.Printf("TCP CONNECT %s:%d -> %s:%d", req.Host, req.Port, ip.String(), req.Port)
 	}
 
-	dataConn, ctrlConn, stopRefresh, turnAddr, err := dialTurnTCP(cfg, ip, req.Port)
+	dataConn, release, turnAddr, err := dialTurnTCP(cfg, ip, req.Port)
 	if err != nil {
 		log.Printf("TURN TCP failed %s:%d: %v", ip.String(), req.Port, err)
 		_ = writeSocksReply(client, 0x05, "0.0.0.0", 0)
@@ -746,9 +911,8 @@ func handleTCPConnect(client net.Conn, cfg Config, req socksRequest) {
 	if cfg.LogVerbose {
 		log.Printf("TURN TCP selected %s for %s:%d", turnAddr, req.Host, req.Port)
 	}
-	defer stopRefresh()
+	defer release()
 	defer dataConn.Close()
-	defer ctrlConn.Close()
 
 	if err := writeSocksReply(client, 0x00, "0.0.0.0", 0); err != nil {
 		return
@@ -1166,110 +1330,161 @@ func allocateTCP(conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, 
 	return realm, nonce, true, nil
 }
 
-func dialTurnTCP(cfg Config, targetIP net.IP, targetPort int) (net.Conn, net.Conn, func(), string, error) {
+func dialTurnTCP(cfg Config, targetIP net.IP, targetPort int) (net.Conn, func(), string, error) {
 	var errs []error
 	candidates := cfg.TurnPool.candidates()
 	if len(candidates) == 0 {
-		return nil, nil, nil, "", errors.New("no TURN server candidates")
+		return nil, nil, "", errors.New("no TURN server candidates")
 	}
 	for _, turn := range candidates {
-		dataConn, ctrlConn, stopRefresh, err := dialTurnTCPWithServer(cfg, turn, targetIP, targetPort)
+		dataConn, release, err := dialTurnTCPWithServer(cfg, turn, targetIP, targetPort)
 		if err == nil {
 			cfg.TurnPool.markSuccess(turn)
-			return dataConn, ctrlConn, stopRefresh, turn.Addr, nil
+			return dataConn, release, turn.Addr, nil
 		}
 		if isTurnServerFailure(err) {
 			cfg.TurnPool.markFailure(turn, err)
 			log.Printf("TURN TCP candidate failed via %s: %v", turn.Addr, err)
 		} else {
 			log.Printf("TURN TCP peer connect failed via %s without cooling: %v", turn.Addr, err)
+			return nil, nil, "", err
 		}
 		errs = append(errs, fmt.Errorf("%s: %w", turn.Addr, err))
 	}
-	return nil, nil, nil, "", errors.Join(errs...)
+	return nil, nil, "", errors.Join(errs...)
 }
 
-func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, targetPort int) (net.Conn, net.Conn, func(), error) {
+func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, targetPort int) (net.Conn, func(), error) {
+	peer := tcpPeerKey(targetIP, targetPort)
+	if cfg.TCPAllocs == nil {
+		allocation, err := newTCPAllocation(cfg, turn)
+		if err != nil {
+			return nil, nil, err
+		}
+		dataConn, err := allocation.connect(targetIP, targetPort)
+		if err != nil {
+			allocation.close()
+			return nil, nil, err
+		}
+		return dataConn, allocation.close, nil
+	}
+
+	allocation, err := cfg.TCPAllocs.getOrCreate(cfg, turn, peer)
+	if err != nil {
+		return nil, nil, err
+	}
+	dataConn, err := allocation.connect(targetIP, targetPort)
+	allocation.finishConnect()
+	if err != nil {
+		cfg.TCPAllocs.release(turn, allocation, peer)
+		cfg.TCPAllocs.invalidate(turn, allocation)
+		return nil, nil, err
+	}
+	return dataConn, func() { cfg.TCPAllocs.release(turn, allocation, peer) }, nil
+}
+
+func tcpPeerKey(ip net.IP, port int) string {
+	return net.JoinHostPort(ip.String(), fmt.Sprintf("%d", port))
+}
+
+func newTCPAllocation(cfg Config, turn turnServerConfig) (*tcpAllocation, error) {
 	username, password := turn.auth()
 	ctrlConn, err := dialTCPKeepAlive(turn.Addr, cfg.Timeout)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	realm, nonce, needAuth, err := allocateTCP(ctrlConn, cfg, turn)
 	if err != nil {
 		ctrlConn.Close()
-		return nil, nil, nil, err
+		return nil, err
+	}
+
+	a := &tcpAllocation{
+		cfg:         cfg,
+		turn:        turn,
+		username:    username,
+		password:    password,
+		ctrlConn:    ctrlConn,
+		realm:       realm,
+		nonce:       nonce,
+		needAuth:    needAuth,
+		stop:        make(chan struct{}),
+		activePeers: make(map[string]struct{}),
+	}
+	go a.refreshLoop()
+	return a, nil
+}
+
+func (a *tcpAllocation) connect(targetIP net.IP, targetPort int) (net.Conn, error) {
+	a.ctrlMu.Lock()
+	if a.closed.Load() {
+		a.ctrlMu.Unlock()
+		return nil, errors.New("TCP allocation is closed")
 	}
 
 	connectReq := stun.New()
 	connectReq.Type = stun.MessageType{Method: MethodConnect, Class: stun.ClassRequest}
 	connectReq.TransactionID = stun.NewTransactionID()
 	if err := addXORPeerAddress(connectReq, targetIP, targetPort); err != nil {
-		ctrlConn.Close()
-		return nil, nil, nil, err
+		a.ctrlMu.Unlock()
+		return nil, err
 	}
-	if needAuth {
-		if err := addAuthToMessage(connectReq, username, password, &realm, &nonce); err != nil {
-			ctrlConn.Close()
-			return nil, nil, nil, err
+	if a.needAuth {
+		if err := addAuthToMessage(connectReq, a.username, a.password, &a.realm, &a.nonce); err != nil {
+			a.ctrlMu.Unlock()
+			return nil, err
 		}
 	}
 
-	connectRes, err := doSTUN(ctrlConn, connectReq, cfg.Timeout)
+	connectRes, err := doSTUN(a.ctrlConn, connectReq, a.cfg.Timeout)
+	a.ctrlMu.Unlock()
 	if err != nil {
-		ctrlConn.Close()
-		return nil, nil, nil, err
+		if isTimeoutError(err) {
+			return nil, turnPeerError(err)
+		}
+		return nil, err
 	}
 
 	connID, err := getConnectionID(connectRes)
 	if err != nil {
-		ctrlConn.Close()
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	dataConn, err := dialTCPKeepAlive(turn.Addr, cfg.Timeout)
+	dataConn, err := dialTCPKeepAlive(a.turn.Addr, a.cfg.Timeout)
 	if err != nil {
-		ctrlConn.Close()
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	bind := stun.New()
 	bind.Type = stun.MessageType{Method: MethodConnectionBind, Class: stun.ClassRequest}
 	bind.TransactionID = stun.NewTransactionID()
 	bind.Add(AttrConnectionID, connID)
-	if needAuth {
-		if err := addAuthToMessage(bind, username, password, &realm, &nonce); err != nil {
+	if a.needAuth {
+		if err := addAuthToMessage(bind, a.username, a.password, &a.realm, &a.nonce); err != nil {
 			dataConn.Close()
-			ctrlConn.Close()
-			return nil, nil, nil, err
+			return nil, err
 		}
 	}
 
-	bindRes, err := doSTUN(dataConn, bind, cfg.Timeout)
+	bindRes, err := doSTUN(dataConn, bind, a.cfg.Timeout)
 	if err != nil {
 		dataConn.Close()
-		ctrlConn.Close()
-		return nil, nil, nil, err
+		return nil, err
 	}
 	if bindRes.Type.Class != stun.ClassSuccessResponse {
 		c, r := getErrorCode(bindRes)
 		dataConn.Close()
-		ctrlConn.Close()
-		return nil, nil, nil, fmt.Errorf("connection-bind error %d %s", c, r)
+		return nil, fmt.Errorf("connection-bind error %d %s", c, r)
 	}
 
-	stopRefresh := make(chan struct{})
-	stopOnce := sync.Once{}
-	go refreshTCPAllocation(ctrlConn, dataConn, cfg, turn, username, password, realm, nonce, needAuth, stopRefresh)
-
-	return dataConn, ctrlConn, func() { stopOnce.Do(func() { close(stopRefresh) }) }, nil
+	return dataConn, nil
 }
 
 func getConnectionID(res *stun.Message) ([]byte, error) {
 	if res.Type.Class != stun.ClassSuccessResponse {
 		c, r := getErrorCode(res)
-		return nil, turnPeerError(fmt.Errorf("connect error %d %s", c, r))
+		return nil, turnPeerError(fmt.Errorf("connect error %d %s", c, strings.TrimRight(r, "\x00")))
 	}
 	connID, err := res.Get(AttrConnectionID)
 	if err != nil || len(connID) == 0 {
@@ -1278,34 +1493,94 @@ func getConnectionID(res *stun.Message) ([]byte, error) {
 	return connID, nil
 }
 
-func refreshTCPAllocation(ctrlConn net.Conn, dataConn net.Conn, cfg Config, turn turnServerConfig, username string, password string, realm stun.Realm, nonce stun.Nonce, needAuth bool, stop <-chan struct{}) {
+func (a *tcpAllocation) isClosed() bool {
+	return a.closed.Load()
+}
+
+func (a *tcpAllocation) tryReservePeer(peer string) bool {
+	if a.isClosed() {
+		return false
+	}
+	a.peerMu.Lock()
+	defer a.peerMu.Unlock()
+	if a.isClosed() {
+		return false
+	}
+	if a.connecting > 0 {
+		return false
+	}
+	if _, ok := a.activePeers[peer]; ok {
+		return false
+	}
+	a.activePeers[peer] = struct{}{}
+	a.connecting++
+	return true
+}
+
+func (a *tcpAllocation) finishConnect() {
+	a.peerMu.Lock()
+	if a.connecting > 0 {
+		a.connecting--
+	}
+	a.peerMu.Unlock()
+}
+
+func (a *tcpAllocation) releasePeer(peer string) {
+	a.peerMu.Lock()
+	delete(a.activePeers, peer)
+	a.peerMu.Unlock()
+}
+
+func (a *tcpAllocation) hasActivePeers() bool {
+	a.peerMu.Lock()
+	defer a.peerMu.Unlock()
+	return len(a.activePeers) > 0
+}
+
+func (a *tcpAllocation) close() {
+	a.closeOnce.Do(func() {
+		a.closed.Store(true)
+		close(a.stop)
+		_ = a.ctrlConn.Close()
+	})
+}
+
+func (a *tcpAllocation) refreshLoop() {
 	ticker := time.NewTicker(allocationRefreshEvery)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			if err := refreshAllocation(ctrlConn, cfg, username, password, realm, nonce, needAuth); err != nil {
+			if err := a.refresh(); err != nil {
 				select {
 				case <-time.After(refreshRetryDelay):
-				case <-stop:
+				case <-a.stop:
 					return
 				}
-				if retryErr := refreshAllocation(ctrlConn, cfg, username, password, realm, nonce, needAuth); retryErr != nil {
-					cfg.TurnPool.markFailure(turn, retryErr)
-					log.Printf("TCP allocation refresh failed via %s after retry: %v", turn.Addr, errors.Join(err, retryErr))
-					_ = dataConn.Close()
-					_ = ctrlConn.Close()
+				if retryErr := a.refresh(); retryErr != nil {
+					a.cfg.TurnPool.markFailure(a.turn, retryErr)
+					log.Printf("TCP allocation refresh failed via %s after retry: %v", a.turn.Addr, errors.Join(err, retryErr))
+					a.close()
 					return
 				}
-				if cfg.LogVerbose {
-					log.Printf("TCP allocation refresh recovered via %s after retry: %v", turn.Addr, err)
+				if a.cfg.LogVerbose {
+					log.Printf("TCP allocation refresh recovered via %s after retry: %v", a.turn.Addr, err)
 				}
 			}
-		case <-stop:
+		case <-a.stop:
 			return
 		}
 	}
+}
+
+func (a *tcpAllocation) refresh() error {
+	a.ctrlMu.Lock()
+	defer a.ctrlMu.Unlock()
+	if a.closed.Load() {
+		return errors.New("TCP allocation is closed")
+	}
+	return refreshAllocation(a.ctrlConn, a.cfg, a.username, a.password, a.realm, a.nonce, a.needAuth)
 }
 
 func refreshAllocation(conn net.Conn, cfg Config, username string, password string, realm stun.Realm, nonce stun.Nonce, needAuth bool) error {
