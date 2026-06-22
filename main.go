@@ -48,6 +48,8 @@ const (
 	refreshRetryDelay             = time.Second
 )
 
+var sendIndicationMessageType = stun.MessageType{Method: MethodSend, Class: stun.ClassIndication}.Value()
+
 var proxyCopyBufferPool = sync.Pool{
 	New: func() any {
 		buf := make([]byte, proxyCopyBufferSize)
@@ -1689,6 +1691,8 @@ type udpSession struct {
 	permissions  map[[4]byte]time.Time
 	permissionMu sync.Mutex
 	socksUDPBuf  []byte
+	sendBuf      []byte
+	sendTxID     uint64
 	clientAddrMu sync.RWMutex
 	clientAddr   *net.UDPAddr
 	closed       chan struct{}
@@ -1788,6 +1792,7 @@ func newUDPSessionWithNetwork(cfg Config, clientTCP net.Conn, localUDP *net.UDPC
 		turnNetwork: network,
 		pending:     make(map[string]chan *stun.Message),
 		permissions: make(map[[4]byte]time.Time),
+		sendTxID:    uint64(time.Now().UnixNano()),
 		closed:      make(chan struct{}),
 	}
 	allocateTimeout := cfg.Timeout
@@ -1852,6 +1857,7 @@ func tuneUDPConn(conn net.Conn) {
 type stunConn interface {
 	readMessage(timeout time.Duration) (*stun.Message, error)
 	writeMessage(m *stun.Message, timeout time.Duration) error
+	writeRaw(raw []byte, timeout time.Duration) error
 	close() error
 }
 
@@ -1877,6 +1883,16 @@ func (c *tcpSTUNConn) writeMessage(m *stun.Message, timeout time.Duration) error
 		defer c.conn.SetWriteDeadline(time.Time{})
 	}
 	return writeSTUNMessage(c.conn, m)
+}
+
+func (c *tcpSTUNConn) writeRaw(raw []byte, timeout time.Duration) error {
+	if timeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		defer c.conn.SetWriteDeadline(time.Time{})
+	}
+	return writeAll(c.conn, raw)
 }
 
 func (c *tcpSTUNConn) close() error {
@@ -1919,6 +1935,23 @@ func (c *udpSTUNConn) writeMessage(m *stun.Message, timeout time.Duration) error
 		return err
 	}
 	if n != len(m.Raw) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func (c *udpSTUNConn) writeRaw(raw []byte, timeout time.Duration) error {
+	if timeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		defer c.conn.SetWriteDeadline(time.Time{})
+	}
+	n, err := c.conn.Write(raw)
+	if err != nil {
+		return err
+	}
+	if n != len(raw) {
 		return io.ErrShortWrite
 	}
 	return nil
@@ -2217,22 +2250,68 @@ func (s *udpSession) readLocalUDPLoop() {
 			continue
 		}
 
-		msg := stun.New()
-		msg.Type = stun.MessageType{Method: MethodSend, Class: stun.ClassIndication}
-		msg.TransactionID = stun.NewTransactionID()
-		if err := addXORPeerAddress(msg, ip, port); err != nil {
+		raw, err := s.buildSendIndication(ip, port, payload)
+		if err != nil {
 			continue
 		}
-		msg.Add(AttrData, payload)
 
 		s.writeMu.Lock()
-		err = s.turnConn.writeMessage(msg, s.cfg.Timeout)
+		err = s.turnConn.writeRaw(raw, s.cfg.Timeout)
 		s.writeMu.Unlock()
 		if err != nil {
 			s.close()
 			return
 		}
 	}
+}
+
+func (s *udpSession) buildSendIndication(ip net.IP, port int, payload []byte) ([]byte, error) {
+	if port < 0 || port > 65535 {
+		return nil, fmt.Errorf("invalid port %d", port)
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return nil, errors.New("only IPv4 is supported")
+	}
+	if len(payload) > 0xffff {
+		return nil, fmt.Errorf("UDP payload too large: %d", len(payload))
+	}
+
+	dataPad := (4 - len(payload)%4) % 4
+	msgLen := 12 + 4 + len(payload) + dataPad
+	size := 20 + msgLen
+	if cap(s.sendBuf) < size {
+		s.sendBuf = make([]byte, size)
+	}
+	raw := s.sendBuf[:size]
+
+	binary.BigEndian.PutUint16(raw[0:2], sendIndicationMessageType)
+	binary.BigEndian.PutUint16(raw[2:4], uint16(msgLen))
+	binary.BigEndian.PutUint32(raw[4:8], stunMagicCookie)
+	s.sendTxID++
+	binary.BigEndian.PutUint32(raw[8:12], uint32(s.sendTxID>>32))
+	binary.BigEndian.PutUint64(raw[12:20], s.sendTxID)
+
+	offset := 20
+	binary.BigEndian.PutUint16(raw[offset:offset+2], uint16(AttrXORPeerAddress))
+	binary.BigEndian.PutUint16(raw[offset+2:offset+4], 8)
+	raw[offset+4] = 0
+	raw[offset+5] = 1
+	binary.BigEndian.PutUint16(raw[offset+6:offset+8], uint16(port)^uint16(stunMagicCookie>>16))
+	raw[offset+8] = ip4[0] ^ byte(stunMagicCookie>>24)
+	raw[offset+9] = ip4[1] ^ byte(stunMagicCookie>>16&0xff)
+	raw[offset+10] = ip4[2] ^ byte(stunMagicCookie>>8&0xff)
+	raw[offset+11] = ip4[3] ^ byte(stunMagicCookie&0xff)
+
+	offset += 12
+	binary.BigEndian.PutUint16(raw[offset:offset+2], uint16(AttrData))
+	binary.BigEndian.PutUint16(raw[offset+2:offset+4], uint16(len(payload)))
+	copy(raw[offset+4:], payload)
+	for i := offset + 4 + len(payload); i < size; i++ {
+		raw[i] = 0
+	}
+
+	return raw, nil
 }
 
 func parseSocksUDPPacket(pkt []byte) (net.IP, string, int, []byte, error) {
