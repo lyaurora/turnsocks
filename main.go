@@ -53,6 +53,7 @@ const (
 )
 
 var sendIndicationMessageType = stun.MessageType{Method: MethodSend, Class: stun.ClassIndication}.Value()
+var dataIndicationMessageType = stun.MessageType{Method: MethodData, Class: stun.ClassIndication}.Value()
 
 var proxyCopyBufferPool = sync.Pool{
 	New: func() any {
@@ -1910,9 +1911,16 @@ func tuneUDPConn(conn net.Conn) {
 
 type stunConn interface {
 	readMessage(timeout time.Duration) (*stun.Message, error)
+	readMessageOrData(timeout time.Duration) (*stun.Message, turnUDPData, bool, error)
 	writeMessage(m *stun.Message, timeout time.Duration) error
 	writeRaw(raw []byte, timeout time.Duration) error
 	close() error
+}
+
+type turnUDPData struct {
+	ip4     [4]byte
+	port    int
+	payload []byte
 }
 
 type tcpSTUNConn struct {
@@ -1927,6 +1935,11 @@ func (c *tcpSTUNConn) readMessage(timeout time.Duration) (*stun.Message, error) 
 		defer c.conn.SetReadDeadline(time.Time{})
 	}
 	return readSTUNMessage(c.conn)
+}
+
+func (c *tcpSTUNConn) readMessageOrData(timeout time.Duration) (*stun.Message, turnUDPData, bool, error) {
+	m, err := c.readMessage(timeout)
+	return m, turnUDPData{}, false, err
 }
 
 func (c *tcpSTUNConn) writeMessage(m *stun.Message, timeout time.Duration) error {
@@ -1974,6 +1987,33 @@ func (c *udpSTUNConn) readMessage(timeout time.Duration) (*stun.Message, error) 
 		return nil, err
 	}
 	return decodeSTUNMessage(c.readBuf[:n])
+}
+
+func (c *udpSTUNConn) readMessageOrData(timeout time.Duration) (*stun.Message, turnUDPData, bool, error) {
+	if timeout > 0 {
+		if err := c.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return nil, turnUDPData{}, false, err
+		}
+		defer c.conn.SetReadDeadline(time.Time{})
+	}
+
+	if c.readBuf == nil {
+		c.readBuf = make([]byte, 65535)
+	}
+	n, err := c.conn.Read(c.readBuf)
+	if err != nil {
+		return nil, turnUDPData{}, false, err
+	}
+	raw := c.readBuf[:n]
+	if len(raw) >= 2 && binary.BigEndian.Uint16(raw[0:2]) == dataIndicationMessageType {
+		data, ok := parseTurnUDPDataIndication(raw)
+		if !ok {
+			return nil, turnUDPData{}, false, nil
+		}
+		return nil, data, true, nil
+	}
+	m, err := decodeSTUNMessage(raw)
+	return m, turnUDPData{}, false, err
 }
 
 func (c *udpSTUNConn) writeMessage(m *stun.Message, timeout time.Duration) error {
@@ -2172,10 +2212,17 @@ func (s *udpSession) refreshAllocation() error {
 
 func (s *udpSession) readTurnLoop() {
 	for {
-		m, err := s.turnConn.readMessage(0)
+		m, data, ok, err := s.turnConn.readMessageOrData(0)
 		if err != nil {
 			s.close()
 			return
+		}
+		if ok {
+			s.handleUDPData(data)
+			continue
+		}
+		if m == nil {
+			continue
 		}
 
 		if m.Type.Method == MethodData && m.Type.Class == stun.ClassIndication {
@@ -2195,6 +2242,79 @@ func (s *udpSession) readTurnLoop() {
 			}
 		}
 	}
+}
+
+func parseTurnUDPDataIndication(raw []byte) (turnUDPData, bool) {
+	if len(raw) < 20 {
+		return turnUDPData{}, false
+	}
+	if binary.BigEndian.Uint32(raw[4:8]) != stunMagicCookie {
+		return turnUDPData{}, false
+	}
+	length := int(binary.BigEndian.Uint16(raw[2:4]))
+	if length%4 != 0 || length > maxSTUNMessageLength {
+		return turnUDPData{}, false
+	}
+	total := 20 + length
+	if len(raw) < total {
+		return turnUDPData{}, false
+	}
+
+	var (
+		ip4     [4]byte
+		port    int
+		hasPeer bool
+		payload []byte
+	)
+	for offset := 20; offset < total; {
+		if offset+4 > total {
+			return turnUDPData{}, false
+		}
+		attrType := stun.AttrType(binary.BigEndian.Uint16(raw[offset : offset+2]))
+		attrLen := int(binary.BigEndian.Uint16(raw[offset+2 : offset+4]))
+		valueStart := offset + 4
+		valueEnd := valueStart + attrLen
+		if valueEnd > total {
+			return turnUDPData{}, false
+		}
+
+		switch attrType {
+		case AttrXORPeerAddress:
+			if attrLen != 8 || raw[valueStart+1] != 1 {
+				return turnUDPData{}, false
+			}
+			port = int(binary.BigEndian.Uint16(raw[valueStart+2:valueStart+4]) ^ uint16(stunMagicCookie>>16))
+			ip4[0] = raw[valueStart+4] ^ byte(stunMagicCookie>>24)
+			ip4[1] = raw[valueStart+5] ^ byte(stunMagicCookie>>16&0xff)
+			ip4[2] = raw[valueStart+6] ^ byte(stunMagicCookie>>8&0xff)
+			ip4[3] = raw[valueStart+7] ^ byte(stunMagicCookie&0xff)
+			hasPeer = true
+		case AttrData:
+			payload = raw[valueStart:valueEnd]
+		}
+
+		next := valueEnd + ((4 - attrLen%4) % 4)
+		if next > total {
+			return turnUDPData{}, false
+		}
+		offset = next
+	}
+	if !hasPeer || payload == nil || port == 0 {
+		return turnUDPData{}, false
+	}
+	return turnUDPData{ip4: ip4, port: port, payload: payload}, true
+}
+
+func (s *udpSession) handleUDPData(data turnUDPData) {
+	s.clientAddrMu.RLock()
+	caddr := s.clientAddr
+	s.clientAddrMu.RUnlock()
+	if caddr == nil {
+		return
+	}
+
+	pkt := s.buildSocksUDPIPv4Raw(data.ip4, data.port, data.payload)
+	_, _ = s.localUDP.WriteToUDP(pkt, caddr)
 }
 
 func (s *udpSession) handleDataIndication(m *stun.Message) {
@@ -2260,6 +2380,22 @@ func (s *udpSession) buildSocksUDPIPv4(ip net.IP, port int, payload []byte) []by
 	pkt[2] = 0
 	pkt[3] = 0x01
 	copy(pkt[4:8], ip4)
+	binary.BigEndian.PutUint16(pkt[8:10], uint16(port))
+	copy(pkt[10:], payload)
+	return pkt
+}
+
+func (s *udpSession) buildSocksUDPIPv4Raw(ip4 [4]byte, port int, payload []byte) []byte {
+	size := 10 + len(payload)
+	if cap(s.socksUDPBuf) < size {
+		s.socksUDPBuf = make([]byte, size)
+	}
+	pkt := s.socksUDPBuf[:size]
+	pkt[0] = 0
+	pkt[1] = 0
+	pkt[2] = 0
+	pkt[3] = 0x01
+	copy(pkt[4:8], ip4[:])
 	binary.BigEndian.PutUint16(pkt[8:10], uint16(port))
 	copy(pkt[10:], payload)
 	return pkt
