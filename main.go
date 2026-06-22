@@ -13,10 +13,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/pion/stun"
@@ -180,6 +184,8 @@ var (
 
 func main() {
 	cfg := Config{}
+	var cpuProfile string
+	var memProfile string
 
 	configPath := defaultConfigPath()
 	configPath = preFlagValue("config", getenv("CONFIG_PATH", configPath))
@@ -197,7 +203,21 @@ func main() {
 	flag.DurationVar(&cfg.DNSTTL, "dns-ttl", 300*time.Second, "DNS cache TTL")
 	flag.DurationVar(&cfg.Timeout, "timeout", 20*time.Second, "network timeout")
 	flag.BoolVar(&cfg.LogVerbose, "v", false, "verbose log")
+	flag.StringVar(&cpuProfile, "cpuprofile", "", "write CPU profile to file")
+	flag.StringVar(&memProfile, "memprofile", "", "write heap profile to file on exit")
 	flag.Parse()
+
+	stopProfile := startProfiling(cpuProfile, memProfile)
+	defer stopProfile()
+	if cpuProfile != "" || memProfile != "" {
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-signals
+			stopProfile()
+			os.Exit(0)
+		}()
+	}
 
 	if cfg.Timeout <= 0 {
 		log.Fatal("timeout must be greater than 0")
@@ -242,6 +262,47 @@ func main() {
 	go cleanupDNSCache(cfg.DNSTTL)
 
 	select {}
+}
+
+func startProfiling(cpuPath string, memPath string) func() {
+	var (
+		once    sync.Once
+		cpuFile *os.File
+	)
+
+	if cpuPath != "" {
+		f, err := os.Create(cpuPath)
+		if err != nil {
+			log.Fatalf("create CPU profile failed: %v", err)
+		}
+		cpuFile = f
+		if err := pprof.StartCPUProfile(cpuFile); err != nil {
+			_ = cpuFile.Close()
+			log.Fatalf("start CPU profile failed: %v", err)
+		}
+	}
+
+	return func() {
+		once.Do(func() {
+			if cpuFile != nil {
+				pprof.StopCPUProfile()
+				_ = cpuFile.Close()
+			}
+			if memPath == "" {
+				return
+			}
+			runtime.GC()
+			f, err := os.Create(memPath)
+			if err != nil {
+				log.Printf("create heap profile failed: %v", err)
+				return
+			}
+			if err := pprof.WriteHeapProfile(f); err != nil {
+				log.Printf("write heap profile failed: %v", err)
+			}
+			_ = f.Close()
+		})
+	}
 }
 
 func getenv(k, def string) string {
