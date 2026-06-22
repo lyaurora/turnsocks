@@ -260,6 +260,7 @@ func main() {
 	if err := proxy.start(); err != nil {
 		log.Fatalf("SOCKS5 start failed: %v", err)
 	}
+	go prewarmTCPAllocation(cfg)
 	go cleanupDNSCache(cfg.DNSTTL)
 
 	select {}
@@ -546,6 +547,61 @@ func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer 
 	p.allocs[key] = append(p.allocs[key], a)
 	p.mu.Unlock()
 	return a, nil
+}
+
+func (p *tcpAllocationPool) addIdle(cfg Config, turn turnServerConfig) error {
+	if p == nil {
+		return nil
+	}
+	key := turn.String()
+
+	p.mu.Lock()
+	p.pruneClosedLocked(key)
+	for _, a := range p.allocs[key] {
+		if !a.isClosed() {
+			p.mu.Unlock()
+			return nil
+		}
+	}
+	p.mu.Unlock()
+
+	a, err := newTCPAllocation(cfg, turn)
+	if err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	p.pruneClosedLocked(key)
+	for _, existing := range p.allocs[key] {
+		if !existing.isClosed() {
+			p.mu.Unlock()
+			a.close()
+			return nil
+		}
+	}
+	p.allocs[key] = append(p.allocs[key], a)
+	p.mu.Unlock()
+	return nil
+}
+
+func prewarmTCPAllocation(cfg Config) {
+	if cfg.TCPAllocs == nil || cfg.TurnPool == nil {
+		return
+	}
+	candidates := cfg.TurnPool.candidates()
+	if len(candidates) == 0 {
+		return
+	}
+	turn := candidates[0]
+	if err := cfg.TCPAllocs.addIdle(cfg, turn); err != nil {
+		if cfg.LogVerbose {
+			log.Printf("TCP allocation prewarm failed via %s: %v", turn.Addr, err)
+		}
+		return
+	}
+	if cfg.LogVerbose {
+		log.Printf("TCP allocation prewarmed via %s", turn.Addr)
+	}
 }
 
 func (p *tcpAllocationPool) release(turn turnServerConfig, allocation *tcpAllocation, peer string) {
