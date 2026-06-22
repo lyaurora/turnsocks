@@ -1456,7 +1456,9 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 	if err != nil {
 		allocation.finishConnect()
 		cfg.TCPAllocs.release(turn, allocation, peer)
-		cfg.TCPAllocs.invalidate(turn, allocation)
+		if isTurnServerFailure(err) || isTimeoutError(err) {
+			cfg.TCPAllocs.invalidate(turn, allocation)
+		}
 		return nil, nil, err
 	}
 	if !allocation.trackDataConn(dataConn) {
