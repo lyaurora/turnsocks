@@ -254,6 +254,7 @@ func main() {
 	}
 	cfg.DoHClient = &http.Client{Timeout: cfg.Timeout}
 
+	go prewarmDoH(cfg)
 	log.Printf("TURN servers: %s", strings.Join(turnServerAddrs(cfg.TurnServers), ", "))
 	log.Printf("TURN auth: per-server inline only")
 	proxy := newProxyController(cfg)
@@ -601,6 +602,12 @@ func prewarmTCPAllocation(cfg Config) {
 	}
 	if cfg.LogVerbose {
 		log.Printf("TCP allocation prewarmed via %s", turn.Addr)
+	}
+}
+
+func prewarmDoH(cfg Config) {
+	if _, err := resolveDoH("cloudflare.com", cfg); err != nil && cfg.LogVerbose {
+		log.Printf("DoH prewarm failed: %v", err)
 	}
 }
 
