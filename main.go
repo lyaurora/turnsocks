@@ -44,8 +44,16 @@ const (
 	turnUDPAttemptTimeout         = 3 * time.Second
 	tcpKeepAlivePeriod            = 30 * time.Second
 	udpSocketBufferSize           = 512 << 10
+	proxyCopyBufferSize           = 32 << 10
 	refreshRetryDelay             = time.Second
 )
+
+var proxyCopyBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, proxyCopyBufferSize)
+		return &buf
+	},
+}
 
 type Config struct {
 	Listen       string
@@ -945,7 +953,10 @@ func pipe(a net.Conn, b net.Conn) {
 }
 
 func copyAndCloseWrite(dst net.Conn, src net.Conn) {
-	if _, err := io.Copy(dst, src); err != nil {
+	bufp := proxyCopyBufferPool.Get().(*[]byte)
+	_, err := io.CopyBuffer(dst, src, *bufp)
+	proxyCopyBufferPool.Put(bufp)
+	if err != nil {
 		_ = dst.Close()
 		_ = src.Close()
 		return
