@@ -1809,6 +1809,7 @@ type udpSession struct {
 	pendingMu    sync.Mutex
 	pending      map[string]chan *stun.Message
 	permissions  map[[4]byte]time.Time
+	permPending  map[[4]byte]struct{}
 	permissionMu sync.Mutex
 	socksUDPBuf  []byte
 	sendBuf      []byte
@@ -1912,6 +1913,7 @@ func newUDPSessionWithNetwork(cfg Config, clientTCP net.Conn, localUDP *net.UDPC
 		turnNetwork: network,
 		pending:     make(map[string]chan *stun.Message),
 		permissions: make(map[[4]byte]time.Time),
+		permPending: make(map[[4]byte]struct{}),
 		sendTxID:    uint64(time.Now().UnixNano()),
 		closed:      make(chan struct{}),
 	}
@@ -2622,9 +2624,14 @@ func (s *udpSession) ensurePermission(ip net.IP) error {
 		return errors.New("only IPv4 is supported")
 	}
 
+	now := time.Now()
 	s.permissionMu.Lock()
 	exp, ok := s.permissions[key]
-	if ok && time.Now().Before(exp) {
+	if ok && now.Before(exp) {
+		s.permissionMu.Unlock()
+		return nil
+	}
+	if _, ok := s.permPending[key]; ok {
 		s.permissionMu.Unlock()
 		return nil
 	}
@@ -2642,20 +2649,77 @@ func (s *udpSession) ensurePermission(ip net.IP) error {
 		}
 	}
 
-	res, err := s.request(req, 5*time.Second)
-	if err != nil {
-		return err
-	}
-	if res.Type.Class != stun.ClassSuccessResponse {
-		code, reason := getErrorCode(res)
-		return fmt.Errorf("permission error %d %s", code, reason)
-	}
+	// Queue CreatePermission before the Send Indication, but do not wait for
+	// the response. This removes one TURN RTT from the first UDP packet.
+	ch := make(chan *stun.Message, 1)
+	txKey := s.txIDKey(req.TransactionID)
 
 	s.permissionMu.Lock()
-	s.permissions[key] = time.Now().Add(240 * time.Second)
+	exp, ok = s.permissions[key]
+	if ok && time.Now().Before(exp) {
+		s.permissionMu.Unlock()
+		return nil
+	}
+	if _, ok := s.permPending[key]; ok {
+		s.permissionMu.Unlock()
+		return nil
+	}
+	s.permPending[key] = struct{}{}
 	s.permissionMu.Unlock()
 
+	s.pendingMu.Lock()
+	s.pending[txKey] = ch
+	s.pendingMu.Unlock()
+
+	s.writeMu.Lock()
+	err := s.turnConn.writeMessage(req, 5*time.Second)
+	s.writeMu.Unlock()
+	if err != nil {
+		s.pendingMu.Lock()
+		delete(s.pending, txKey)
+		s.pendingMu.Unlock()
+		s.permissionMu.Lock()
+		delete(s.permPending, key)
+		s.permissionMu.Unlock()
+		return err
+	}
+	go s.finishPermission(key, txKey, ch)
+
 	return nil
+}
+
+func (s *udpSession) finishPermission(key [4]byte, txKey string, ch chan *stun.Message) {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	defer func() {
+		s.pendingMu.Lock()
+		delete(s.pending, txKey)
+		s.pendingMu.Unlock()
+
+		s.permissionMu.Lock()
+		delete(s.permPending, key)
+		s.permissionMu.Unlock()
+	}()
+
+	select {
+	case res := <-ch:
+		if res.Type.Class != stun.ClassSuccessResponse {
+			code, reason := getErrorCode(res)
+			if s.cfg.LogVerbose {
+				log.Printf("permission error %d %s", code, reason)
+			}
+			return
+		}
+		s.permissionMu.Lock()
+		s.permissions[key] = time.Now().Add(240 * time.Second)
+		s.permissionMu.Unlock()
+	case <-timer.C:
+		if s.cfg.LogVerbose {
+			log.Printf("CreatePermission timed out")
+		}
+	case <-s.closed:
+		return
+	}
 }
 
 func permissionKey(ip net.IP) ([4]byte, bool) {
