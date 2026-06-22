@@ -1249,21 +1249,16 @@ func addXORPeerAddress(m *stun.Message, ip net.IP, port int) error {
 	magicPort := uint16(stunMagicCookie >> 16)
 	xPort := uint16(port) ^ magicPort
 
-	cookie := make([]byte, 4)
-	binary.BigEndian.PutUint32(cookie, stunMagicCookie)
-
-	xIP := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		xIP[i] = ip4[i] ^ cookie[i]
-	}
-
-	v := make([]byte, 8)
+	var v [8]byte
 	v[0] = 0
 	v[1] = 1
 	binary.BigEndian.PutUint16(v[2:4], xPort)
-	copy(v[4:8], xIP)
+	v[4] = ip4[0] ^ byte(stunMagicCookie>>24)
+	v[5] = ip4[1] ^ byte(stunMagicCookie>>16&0xff)
+	v[6] = ip4[2] ^ byte(stunMagicCookie>>8&0xff)
+	v[7] = ip4[3] ^ byte(stunMagicCookie&0xff)
 
-	m.Add(AttrXORPeerAddress, v)
+	m.Add(AttrXORPeerAddress, v[:])
 	return nil
 }
 
@@ -1283,13 +1278,11 @@ func decodeXORPeerAddress(v []byte) (net.IP, int, error) {
 	xPort := binary.BigEndian.Uint16(v[2:4])
 	port := int(xPort ^ magicPort)
 
-	cookie := make([]byte, 4)
-	binary.BigEndian.PutUint32(cookie, stunMagicCookie)
-
 	ip := make(net.IP, 4)
-	for i := 0; i < 4; i++ {
-		ip[i] = v[4+i] ^ cookie[i]
-	}
+	ip[0] = v[4] ^ byte(stunMagicCookie>>24)
+	ip[1] = v[5] ^ byte(stunMagicCookie>>16&0xff)
+	ip[2] = v[6] ^ byte(stunMagicCookie>>8&0xff)
+	ip[3] = v[7] ^ byte(stunMagicCookie&0xff)
 	return ip, port, nil
 }
 
