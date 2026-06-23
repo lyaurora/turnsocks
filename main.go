@@ -45,7 +45,7 @@ const (
 	maxSTUNMessageLength          = 64 * 1024
 	allocationLifetime            = 10 * time.Minute
 	allocationRefreshEvery        = 5 * time.Minute
-	turnUDPAttemptTimeout         = 3 * time.Second
+	turnUDPAttemptTimeout         = time.Second
 	turnTCPDialTimeout            = 3 * time.Second
 	tcpKeepAlivePeriod            = 30 * time.Second
 	udpSocketBufferSize           = 512 << 10
