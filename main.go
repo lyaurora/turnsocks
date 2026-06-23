@@ -46,6 +46,7 @@ const (
 	allocationLifetime            = 10 * time.Minute
 	allocationRefreshEvery        = 5 * time.Minute
 	turnUDPAttemptTimeout         = 3 * time.Second
+	turnTCPDialTimeout            = 3 * time.Second
 	tcpKeepAlivePeriod            = 30 * time.Second
 	udpSocketBufferSize           = 512 << 10
 	proxyCopyBufferSize           = 32 << 10
@@ -1664,7 +1665,7 @@ func tcpPeerKey(ip net.IP, port int) string {
 
 func newTCPAllocation(cfg Config, turn turnServerConfig) (*tcpAllocation, error) {
 	username, password := turn.auth()
-	ctrlConn, err := dialTCPKeepAlive(turn.Addr, cfg.Timeout)
+	ctrlConn, err := dialTCPKeepAlive(turn.Addr, shorterTimeout(cfg.Timeout, turnTCPDialTimeout))
 	if err != nil {
 		return nil, err
 	}
@@ -1727,7 +1728,7 @@ func (a *tcpAllocation) connect(targetIP net.IP, targetPort int) (net.Conn, erro
 		return nil, err
 	}
 
-	dataConn, err := dialTCPKeepAlive(a.turn.Addr, a.cfg.Timeout)
+	dataConn, err := dialTCPKeepAlive(a.turn.Addr, shorterTimeout(a.cfg.Timeout, turnTCPDialTimeout))
 	if err != nil {
 		return nil, err
 	}
@@ -2071,7 +2072,7 @@ func dialSTUNConn(network string, addr string, timeout time.Duration) (stunConn,
 		err  error
 	)
 	if network == "tcp" {
-		conn, err = dialTCPKeepAlive(addr, timeout)
+		conn, err = dialTCPKeepAlive(addr, shorterTimeout(timeout, turnTCPDialTimeout))
 	} else {
 		conn, err = net.DialTimeout(network, addr, timeout)
 		if err == nil {
