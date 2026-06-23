@@ -76,6 +76,7 @@ type Config struct {
 	Timeout      time.Duration
 	LogVerbose   bool
 	TCPAllocs    *tcpAllocationPool
+	UDPPrewarm   *udpPrewarmPool
 }
 
 type turnServerState struct {
@@ -105,6 +106,15 @@ type turnPool struct {
 type tcpAllocationPool struct {
 	mu     sync.Mutex
 	allocs map[string][]*tcpAllocation
+}
+
+type udpPrewarmPool struct {
+	mu       sync.Mutex
+	session  *udpSession
+	turnKey  string
+	network  string
+	created  time.Time
+	creating bool
 }
 
 type tcpAllocation struct {
@@ -244,6 +254,7 @@ func main() {
 	}
 	cfg.TurnPool = newTurnPool(cfg.TurnServers, cfg.TurnCooldown, cfg.StatePath)
 	cfg.TCPAllocs = newTCPAllocationPool()
+	cfg.UDPPrewarm = newUDPPrewarmPool()
 	cfg.TurnPool.markSuccess(cfg.TurnServers[0])
 	dohURL, err := url.ParseRequestURI(cfg.DoH)
 	if err != nil {
@@ -262,6 +273,7 @@ func main() {
 		log.Fatalf("SOCKS5 start failed: %v", err)
 	}
 	go prewarmTCPAllocation(cfg)
+	go prewarmUDPAllocation(cfg)
 	go cleanupDNSCache(cfg.DNSTTL)
 
 	select {}
@@ -518,6 +530,10 @@ func newTCPAllocationPool() *tcpAllocationPool {
 	return &tcpAllocationPool{allocs: make(map[string][]*tcpAllocation)}
 }
 
+func newUDPPrewarmPool() *udpPrewarmPool {
+	return &udpPrewarmPool{}
+}
+
 func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, error) {
 	key := turn.String()
 
@@ -605,10 +621,116 @@ func prewarmTCPAllocation(cfg Config) {
 	}
 }
 
+func prewarmUDPAllocation(cfg Config) {
+	if cfg.UDPPrewarm == nil || cfg.TurnPool == nil {
+		return
+	}
+	candidates := cfg.TurnPool.candidates()
+	if len(candidates) == 0 {
+		return
+	}
+	turn := candidates[0]
+	if !cfg.TurnPool.udpAllowed(turn) {
+		return
+	}
+	if err := cfg.UDPPrewarm.add(cfg, turn); err != nil {
+		if cfg.LogVerbose {
+			log.Printf("UDP allocation prewarm failed via %s: %v", turn.Addr, err)
+		}
+		return
+	}
+	if cfg.LogVerbose {
+		log.Printf("UDP allocation prewarmed via %s", turn.Addr)
+	}
+}
+
 func prewarmDoH(cfg Config) {
 	if _, err := resolveDoH("cloudflare.com", cfg); err != nil && cfg.LogVerbose {
 		log.Printf("DoH prewarm failed: %v", err)
 	}
+}
+
+func (p *udpPrewarmPool) add(cfg Config, turn turnServerConfig) error {
+	if p == nil {
+		return nil
+	}
+	key := turn.String()
+
+	p.mu.Lock()
+	if p.creating || (p.session != nil && !p.session.isClosed()) {
+		p.mu.Unlock()
+		return nil
+	}
+	p.session = nil
+	p.creating = true
+	p.mu.Unlock()
+
+	s, err := newUDPSessionWithNetwork(cfg, nil, nil, turn, "udp")
+	if err != nil {
+		p.mu.Lock()
+		p.creating = false
+		p.mu.Unlock()
+		return err
+	}
+
+	p.mu.Lock()
+	p.creating = false
+	if p.session != nil && !p.session.isClosed() {
+		p.mu.Unlock()
+		s.close()
+		return nil
+	}
+	p.session = s
+	p.turnKey = key
+	p.network = "udp"
+	p.created = time.Now()
+	p.mu.Unlock()
+
+	go p.expireIdle(cfg, s, allocationRefreshEvery)
+	return nil
+}
+
+func (p *udpPrewarmPool) take(cfg Config, turn turnServerConfig, clientTCP net.Conn, localUDP *net.UDPConn) (*udpSession, string, bool) {
+	if p == nil {
+		return nil, "", false
+	}
+	key := turn.String()
+
+	p.mu.Lock()
+	s := p.session
+	if s == nil || p.turnKey != key || p.network != "udp" || time.Since(p.created) >= allocationRefreshEvery || s.isClosed() {
+		p.session = nil
+		p.mu.Unlock()
+		if s != nil {
+			s.close()
+		}
+		go prewarmUDPAllocation(cfg)
+		return nil, "", false
+	}
+	p.session = nil
+	p.mu.Unlock()
+
+	s.clientTCP = clientTCP
+	s.localUDP = localUDP
+	s.cfg = cfg
+	go prewarmUDPAllocation(cfg)
+	return s, turn.Addr + "/udp", true
+}
+
+func (p *udpPrewarmPool) expireIdle(cfg Config, s *udpSession, maxIdle time.Duration) {
+	timer := time.NewTimer(maxIdle)
+	defer timer.Stop()
+	<-timer.C
+
+	p.mu.Lock()
+	if p.session == s {
+		p.session = nil
+		p.mu.Unlock()
+		s.close()
+		go prewarmUDPAllocation(cfg)
+		return
+	}
+	p.mu.Unlock()
 }
 
 func (p *tcpAllocationPool) release(turn turnServerConfig, allocation *tcpAllocation, peer string) {
@@ -1864,10 +1986,15 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 	for _, turn := range candidates {
 		var err error
 		if cfg.TurnPool.udpAllowed(turn) {
+			if s, turnAddr, ok := cfg.UDPPrewarm.take(cfg, turn, clientTCP, localUDP); ok {
+				cfg.TurnPool.markSuccess(turn)
+				return s, turnAddr, nil
+			}
 			var s *udpSession
 			s, err = newUDPSessionWithNetwork(cfg, clientTCP, localUDP, turn, "udp")
 			if err == nil {
 				cfg.TurnPool.markSuccess(turn)
+				go prewarmUDPAllocation(cfg)
 				return s, turn.Addr + "/udp", nil
 			}
 			cfg.TurnPool.markUDPFailure(turn, err)
@@ -2125,9 +2252,22 @@ func (c *udpSTUNConn) close() error {
 func (s *udpSession) close() {
 	s.closeOnce.Do(func() {
 		close(s.closed)
-		_ = s.localUDP.Close()
-		_ = s.turnConn.close()
+		if s.localUDP != nil {
+			_ = s.localUDP.Close()
+		}
+		if s.turnConn != nil {
+			_ = s.turnConn.close()
+		}
 	})
+}
+
+func (s *udpSession) isClosed() bool {
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *udpSession) txIDKey(id [12]byte) string {
