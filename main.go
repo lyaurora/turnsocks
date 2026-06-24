@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/md5"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -1362,12 +1361,6 @@ func buildDoHURL(endpoint, host string) (string, error) {
 	return u.String(), nil
 }
 
-func createKey(username, realm, password string) []byte {
-	h := md5.New()
-	_, _ = h.Write([]byte(username + ":" + realm + ":" + password))
-	return h.Sum(nil)
-}
-
 func addAuthToMessage(m *stun.Message, username, password string, realm *stun.Realm, nonce *stun.Nonce) error {
 	if username == "" || password == "" {
 		return errors.New("TURN authentication required but username or password is empty")
@@ -1378,8 +1371,8 @@ func addAuthToMessage(m *stun.Message, username, password string, realm *stun.Re
 	stun.Username(username).AddTo(m)
 	realm.AddTo(m)
 	nonce.AddTo(m)
-	key := createKey(username, realm.String(), password)
-	return stun.MessageIntegrity(key).AddTo(m)
+	m.WriteHeader()
+	return stun.NewLongTermIntegrity(username, realm.String(), password).AddTo(m)
 }
 
 func readSTUNMessage(conn net.Conn) (*stun.Message, error) {
