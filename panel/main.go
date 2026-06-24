@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -34,9 +35,11 @@ type app struct {
 }
 
 type proxyConfig struct {
-	Listen  string
-	Servers []string
-	DoH     string
+	Listen        string
+	Servers       []string
+	DoH           string
+	PanelUsername string
+	PanelPassword string
 }
 
 type serverInfo struct {
@@ -92,6 +95,12 @@ func main() {
 		statePath:  absPath(stPath),
 		testPath:   absPath(defaultTestResultsPath(cfgPath)),
 	}
+	auth, err := readPanelAuth(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load panel auth failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", a.handleIndex)
 	mux.HandleFunc("/api/state", a.handleState)
@@ -101,9 +110,15 @@ func main() {
 	mux.HandleFunc("/api/servers/test", a.handleServerTest)
 	mux.HandleFunc("/api/restart", a.handleRestart)
 
+	handler := http.Handler(mux)
+	if auth.enabled() {
+		handler = auth.wrap(handler)
+		fmt.Printf("turnsocks panel auth enabled for user %s\n", auth.username)
+	}
+
 	server := &http.Server{
 		Addr:              *listen,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -144,6 +159,42 @@ func absPath(path string) string {
 		return abs
 	}
 	return path
+}
+
+type panelAuth struct {
+	username string
+	password string
+}
+
+func (a panelAuth) enabled() bool {
+	return a.username != "" && a.password != ""
+}
+
+func (a panelAuth) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || !constantTimeEqual(username, a.username) || !constantTimeEqual(password, a.password) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="turnsocks panel", charset="UTF-8"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func constantTimeEqual(a string, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func readPanelAuth(path string) (panelAuth, error) {
+	cfg, err := readProxyConfig(path)
+	if err != nil {
+		return panelAuth{}, err
+	}
+	return panelAuth{
+		username: cfg.PanelUsername,
+		password: cfg.PanelPassword,
+	}, nil
 }
 
 func (a *app) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -384,6 +435,10 @@ func readProxyConfig(path string) (proxyConfig, error) {
 			if value != "" {
 				cfg.DoH = value
 			}
+		case "PANEL_USERNAME":
+			cfg.PanelUsername = value
+		case "PANEL_PASSWORD":
+			cfg.PanelPassword = value
 		}
 	}
 	return cfg, nil
@@ -406,6 +461,11 @@ func writeProxyConfig(path string, cfg proxyConfig) error {
 		"TURN_SERVERS=" + strings.Join(cfg.Servers, ",") + "\n\n" +
 		"# DoH DNS\n" +
 		"DOH=" + cfg.DoH + "\n"
+	if cfg.PanelUsername != "" || cfg.PanelPassword != "" {
+		data += "\n# 面板登录，两个值都有内容时启用浏览器弹窗认证\n" +
+			"PANEL_USERNAME=" + cfg.PanelUsername + "\n" +
+			"PANEL_PASSWORD=" + cfg.PanelPassword + "\n"
+	}
 
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(data), 0600); err != nil {

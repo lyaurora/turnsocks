@@ -108,11 +108,15 @@ write_config_values() {
   listen_addr=$1
   turn_servers=$2
   doh_url=$3
+  panel_username=$4
+  panel_password=$5
   tmp_config=$(mktemp)
   cat > "$tmp_config" <<EOF
 LISTEN=$listen_addr
 TURN_SERVERS=$turn_servers
 DOH=$doh_url
+PANEL_USERNAME=$panel_username
+PANEL_PASSWORD=$panel_password
 EOF
   if install -m 0600 "$tmp_config" "$CONFIG_FILE" 2>/dev/null; then
     :
@@ -123,12 +127,31 @@ EOF
   set_runtime_owner "$CONFIG_FILE"
 }
 
+generate_panel_password() {
+  if [ -n "${PANEL_PASSWORD:-}" ]; then
+    printf '%s\n' "$PANEL_PASSWORD"
+    return
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 12
+    return
+  fi
+  if [ -r /dev/urandom ] && command -v od >/dev/null 2>&1; then
+    od -An -N12 -tx1 /dev/urandom | tr -d ' \n'
+    printf '\n'
+    return
+  fi
+  date +%s%N
+}
+
 create_default_config() {
   listen_addr=${LISTEN:-127.0.0.1:1080}
   doh_url=${DOH:-https://cloudflare-dns.com/dns-query}
   turn_servers=${TURN_SERVERS:-127.0.0.1:3478}
+  panel_username=${PANEL_USERNAME:-admin}
+  panel_password=$(generate_panel_password)
 
-  write_config_values "$listen_addr" "$turn_servers" "$doh_url"
+  write_config_values "$listen_addr" "$turn_servers" "$doh_url" "$panel_username" "$panel_password"
   echo "Created $CONFIG_FILE."
 }
 

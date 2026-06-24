@@ -55,6 +55,15 @@ ssh -L 10808:127.0.0.1:10808 user@your-vps
 
 然后在浏览器打开 `http://127.0.0.1:10808`。
 
+面板支持浏览器弹窗登录。首次安装创建 `config.env` 时会生成：
+
+```env
+PANEL_USERNAME=admin
+PANEL_PASSWORD=随机密码
+```
+
+两个值都有内容时启用认证；留空则不启用。
+
 面板支持：
 
 - 添加、删除、切换 TURN 节点。
@@ -78,6 +87,8 @@ curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh 
 LISTEN=127.0.0.1:1080
 TURN_SERVERS=user:password@turn.example.com:3478,backup.example.com:3478
 DOH=https://cloudflare-dns.com/dns-query
+PANEL_USERNAME=admin
+PANEL_PASSWORD=your-panel-password
 ```
 
 `TURN_SERVERS` 用英文逗号分隔。节点格式为 `host:port` 或 `user:password@host:port`。第一个节点是默认节点；面板切换节点时会把选中的节点移动到第一位并重启代理。
