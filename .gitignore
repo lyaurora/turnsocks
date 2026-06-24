@@ -17,6 +17,7 @@ turnsocks-panel
 build/
 dist/
 bin/
+node_modules/
 SHA256SUMS
 
 # Editor and OS noise

@@ -51,6 +51,7 @@ const (
 	udpSocketBufferSize           = 512 << 10
 	proxyCopyBufferSize           = 32 << 10
 	refreshRetryDelay             = time.Second
+	turnConfigPollInterval        = 2 * time.Second
 )
 
 var sendIndicationMessageType = stun.MessageType{Method: MethodSend, Class: stun.ClassIndication}.Value()
@@ -105,8 +106,9 @@ type turnPool struct {
 // A TURN TCP allocation may carry multiple peers, but some servers reject
 // concurrent CONNECT requests to the same peer with 446 Connection Already Exists.
 type tcpAllocationPool struct {
-	mu     sync.Mutex
-	allocs map[string][]*tcpAllocation
+	mu      sync.Mutex
+	allocs  map[string][]*tcpAllocation
+	allowed map[string]struct{}
 }
 
 type udpPrewarmPool struct {
@@ -255,6 +257,7 @@ func main() {
 	}
 	cfg.TurnPool = newTurnPool(cfg.TurnServers, cfg.TurnCooldown, cfg.StatePath)
 	cfg.TCPAllocs = newTCPAllocationPool()
+	cfg.TCPAllocs.setAllowed(cfg.TurnServers)
 	cfg.UDPPrewarm = newUDPPrewarmPool()
 	cfg.TurnPool.markSuccess(cfg.TurnServers[0])
 	dohURL, err := url.ParseRequestURI(cfg.DoH)
@@ -275,6 +278,7 @@ func main() {
 	}
 	go prewarmTCPAllocation(cfg)
 	go prewarmUDPAllocation(cfg)
+	go watchTurnConfig(cfg)
 	go cleanupDNSCache(cfg.DNSTTL)
 
 	select {}
@@ -407,6 +411,92 @@ func loadEnvFile(path string) error {
 	return nil
 }
 
+func readEnvFileValue(path string, wantKey string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	for lineNo, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return "", fmt.Errorf("invalid env line %d", lineNo+1)
+		}
+		if strings.TrimSpace(key) != wantKey {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		return strings.Trim(value, "\"'"), nil
+	}
+	return "", nil
+}
+
+func watchTurnConfig(cfg Config) {
+	if cfg.ConfigPath == "" || cfg.TurnPool == nil {
+		return
+	}
+
+	var lastMod time.Time
+	if info, err := os.Stat(cfg.ConfigPath); err == nil {
+		lastMod = info.ModTime()
+	}
+
+	ticker := time.NewTicker(turnConfigPollInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		info, err := os.Stat(cfg.ConfigPath)
+		if err != nil {
+			if cfg.LogVerbose {
+				log.Printf("TURN config watch stat failed: %v", err)
+			}
+			continue
+		}
+		modTime := info.ModTime()
+		if modTime.Equal(lastMod) {
+			continue
+		}
+		lastMod = modTime
+
+		raw, err := readEnvFileValue(cfg.ConfigPath, "TURN_SERVERS")
+		if err != nil {
+			log.Printf("TURN config reload failed: %v", err)
+			continue
+		}
+		servers, err := parseTurnServers(raw)
+		if err != nil {
+			log.Printf("TURN config reload ignored: %v", err)
+			continue
+		}
+		if len(servers) == 0 {
+			log.Printf("TURN config reload ignored: no TURN servers")
+			continue
+		}
+
+		changed, currentChanged, currentAddr, added, removed := cfg.TurnPool.updateServers(servers)
+		if !changed {
+			continue
+		}
+		if cfg.TCPAllocs != nil {
+			cfg.TCPAllocs.setAllowed(servers)
+		}
+		if cfg.UDPPrewarm != nil {
+			cfg.UDPPrewarm.closeIfNotAllowed(servers)
+		}
+		if currentChanged {
+			if err := writeRuntimeState(cfg.StatePath, currentAddr); err != nil {
+				log.Printf("write runtime state failed: %v", err)
+			}
+		}
+		log.Printf("TURN servers reloaded: %d total, +%d -%d", len(servers), added, removed)
+		go prewarmTCPAllocation(cfg)
+		go prewarmUDPAllocation(cfg)
+	}
+}
+
 func newProxyController(cfg Config) *proxyController {
 	return &proxyController{cfg: cfg}
 }
@@ -527,8 +617,77 @@ func newTurnPool(servers []turnServerConfig, cooldown time.Duration, statePath s
 	return p
 }
 
+func (p *turnPool) updateServers(servers []turnServerConfig) (changed bool, currentChanged bool, currentAddr string, added int, removed int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	oldStates := make(map[string]turnServerState, len(p.servers))
+	oldOrder := make([]string, 0, len(p.servers))
+	for _, state := range p.servers {
+		key := state.Server.String()
+		oldStates[key] = state
+		oldOrder = append(oldOrder, key)
+	}
+
+	newStates := make([]turnServerState, 0, len(servers))
+	newKeys := make(map[string]struct{}, len(servers))
+	for _, server := range servers {
+		key := server.String()
+		state, ok := oldStates[key]
+		if !ok {
+			added++
+			state = turnServerState{Server: server}
+		}
+		state.Server = server
+		newStates = append(newStates, state)
+		newKeys[key] = struct{}{}
+	}
+	for key := range oldStates {
+		if _, ok := newKeys[key]; !ok {
+			removed++
+		}
+	}
+
+	changed = len(oldOrder) != len(servers)
+	if !changed {
+		for i, server := range servers {
+			if oldOrder[i] != server.String() {
+				changed = true
+				break
+			}
+		}
+	}
+	if !changed {
+		return false, false, "", 0, 0
+	}
+
+	oldCurrent := p.current
+	p.servers = newStates
+	if len(newStates) == 0 {
+		p.current = ""
+		return true, oldCurrent != "", "", added, removed
+	}
+	if p.current == "" {
+		p.current = newStates[0].Server.String()
+		currentChanged = true
+		currentAddr = newStates[0].Server.Addr
+		return true, currentChanged, currentAddr, added, removed
+	}
+	if _, ok := newKeys[p.current]; ok {
+		return true, false, "", added, removed
+	}
+
+	p.current = newStates[0].Server.String()
+	currentChanged = oldCurrent != p.current
+	currentAddr = newStates[0].Server.Addr
+	return true, currentChanged, currentAddr, added, removed
+}
+
 func newTCPAllocationPool() *tcpAllocationPool {
-	return &tcpAllocationPool{allocs: make(map[string][]*tcpAllocation)}
+	return &tcpAllocationPool{
+		allocs:  make(map[string][]*tcpAllocation),
+		allowed: make(map[string]struct{}),
+	}
 }
 
 func newUDPPrewarmPool() *udpPrewarmPool {
@@ -539,6 +698,10 @@ func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer 
 	key := turn.String()
 
 	p.mu.Lock()
+	if !p.keyAllowedLocked(key) {
+		p.mu.Unlock()
+		return nil, errors.New("TURN server removed from pool")
+	}
 	p.pruneClosedLocked(key)
 	for _, a := range p.allocs[key] {
 		if a.tryReservePeer(peer) {
@@ -554,6 +717,11 @@ func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer 
 	}
 
 	p.mu.Lock()
+	if !p.keyAllowedLocked(key) {
+		p.mu.Unlock()
+		a.close()
+		return nil, errors.New("TURN server removed from pool")
+	}
 	p.pruneClosedLocked(key)
 	for _, existing := range p.allocs[key] {
 		if existing.tryReservePeer(peer) {
@@ -574,6 +742,10 @@ func (p *tcpAllocationPool) addIdle(cfg Config, turn turnServerConfig) error {
 	key := turn.String()
 
 	p.mu.Lock()
+	if !p.keyAllowedLocked(key) {
+		p.mu.Unlock()
+		return nil
+	}
 	p.pruneClosedLocked(key)
 	for _, a := range p.allocs[key] {
 		if !a.isClosed() {
@@ -589,6 +761,11 @@ func (p *tcpAllocationPool) addIdle(cfg Config, turn turnServerConfig) error {
 	}
 
 	p.mu.Lock()
+	if !p.keyAllowedLocked(key) {
+		p.mu.Unlock()
+		a.close()
+		return nil
+	}
 	p.pruneClosedLocked(key)
 	for _, existing := range p.allocs[key] {
 		if !existing.isClosed() {
@@ -734,6 +911,35 @@ func (p *udpPrewarmPool) expireIdle(cfg Config, s *udpSession, maxIdle time.Dura
 	p.mu.Unlock()
 }
 
+func (p *udpPrewarmPool) closeIfNotAllowed(servers []turnServerConfig) {
+	if p == nil {
+		return
+	}
+	allowed := turnServerKeySet(servers)
+
+	p.mu.Lock()
+	s := p.session
+	if s == nil {
+		p.mu.Unlock()
+		return
+	}
+	if _, ok := allowed[p.turnKey]; ok {
+		p.mu.Unlock()
+		return
+	}
+	p.session = nil
+	p.mu.Unlock()
+	s.close()
+}
+
+func turnServerKeySet(servers []turnServerConfig) map[string]struct{} {
+	set := make(map[string]struct{}, len(servers))
+	for _, server := range servers {
+		set[server.String()] = struct{}{}
+	}
+	return set
+}
+
 func (p *tcpAllocationPool) release(turn turnServerConfig, allocation *tcpAllocation, peer string) {
 	if p == nil || allocation == nil {
 		return
@@ -743,6 +949,7 @@ func (p *tcpAllocationPool) release(turn turnServerConfig, allocation *tcpAlloca
 	key := turn.String()
 	var closeIdle []*tcpAllocation
 	p.mu.Lock()
+	allowed := p.keyAllowedLocked(key)
 	p.pruneClosedLocked(key)
 	allocs := p.allocs[key]
 	next := allocs[:0]
@@ -755,7 +962,7 @@ func (p *tcpAllocationPool) release(turn turnServerConfig, allocation *tcpAlloca
 			next = append(next, a)
 			continue
 		}
-		if !keptIdle {
+		if allowed && !keptIdle {
 			keptIdle = true
 			next = append(next, a)
 			continue
@@ -772,6 +979,51 @@ func (p *tcpAllocationPool) release(turn turnServerConfig, allocation *tcpAlloca
 	for _, a := range closeIdle {
 		a.close()
 	}
+}
+
+func (p *tcpAllocationPool) setAllowed(servers []turnServerConfig) {
+	if p == nil {
+		return
+	}
+	allowed := turnServerKeySet(servers)
+	var closeIdle []*tcpAllocation
+
+	p.mu.Lock()
+	p.allowed = allowed
+	for key, allocs := range p.allocs {
+		if _, ok := allowed[key]; ok {
+			continue
+		}
+		next := allocs[:0]
+		for _, a := range allocs {
+			if a.isClosed() {
+				continue
+			}
+			if a.hasActivePeers() {
+				next = append(next, a)
+				continue
+			}
+			closeIdle = append(closeIdle, a)
+		}
+		if len(next) == 0 {
+			delete(p.allocs, key)
+		} else {
+			p.allocs[key] = next
+		}
+	}
+	p.mu.Unlock()
+
+	for _, a := range closeIdle {
+		a.close()
+	}
+}
+
+func (p *tcpAllocationPool) keyAllowedLocked(key string) bool {
+	if len(p.allowed) == 0 {
+		return true
+	}
+	_, ok := p.allowed[key]
+	return ok
 }
 
 func (p *tcpAllocationPool) pruneClosedLocked(key string) {
@@ -920,6 +1172,19 @@ func (p *turnPool) udpAllowed(server turnServerConfig) bool {
 		}
 	}
 	return true
+}
+
+func (p *turnPool) contains(server turnServerConfig) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	key := server.String()
+	for i := range p.servers {
+		if p.servers[i].Server.String() == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *turnPool) markUDPFailure(server turnServerConfig, err error) {
@@ -2117,6 +2382,9 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 }
 
 func newUDPSessionWithNetwork(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn, turn turnServerConfig, network string) (*udpSession, error) {
+	if !cfg.TurnPool.contains(turn) {
+		return nil, errors.New("TURN server removed from pool")
+	}
 	conn, err := dialSTUNConn(network, turn.Addr, cfg.Timeout)
 	if err != nil {
 		return nil, err
@@ -2145,6 +2413,10 @@ func newUDPSessionWithNetwork(cfg Config, clientTCP net.Conn, localUDP *net.UDPC
 	if err := s.allocate(allocateTimeout); err != nil {
 		_ = conn.close()
 		return nil, err
+	}
+	if !cfg.TurnPool.contains(turn) {
+		s.close()
+		return nil, errors.New("TURN server removed from pool")
 	}
 	return s, nil
 }

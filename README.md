@@ -19,7 +19,7 @@
 
 ## 安装
 
-普通 VPS 推荐一行安装，不需要 Go，也不需要克隆源码：
+普通 VPS 推荐一行安装，不需要 Go、Node，也不需要克隆源码：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh | sudo sh
@@ -55,21 +55,26 @@ ssh -L 10808:127.0.0.1:10808 user@your-vps
 
 然后在浏览器打开 `http://127.0.0.1:10808`。
 
-面板支持浏览器弹窗登录。首次安装创建 `config.env` 时会生成：
+面板前端使用 React + Tailwind CSS，构建后会打包进 `turnsocks-panel` 二进制。VPS 上使用 Release 或安装脚本时，不需要安装 Node。
+
+面板使用网页登录。首次安装创建 `config.env` 时会生成：
 
 ```env
 PANEL_USERNAME=admin
 PANEL_PASSWORD=随机密码
 ```
 
-两个值都有内容时启用认证；留空则不启用。
+两个值都有内容时启用认证；留空则不启用。面板里也可以修改账号密码，保存后会自动生效。
 
 面板支持：
 
 - 添加、删除、切换 TURN 节点。
 - 查看默认节点和当前运行节点。
 - 测试节点 TCP 连接延迟、UDP 转发、单线程带宽、多线程带宽。
+- 修改 SOCKS5 监听、DoH、面板账号密码。
 - 保存每个节点最近一次测试结果，再次测试会覆盖旧结果。
+
+添加和删除节点只写入配置，`turnsocks` 会热加载节点池，不会重启当前代理。切换节点、修改 SOCKS5 或 DoH 会重启 `turnsocks` 让配置生效。
 
 ## 更新
 
@@ -103,7 +108,7 @@ sudo journalctl -u turnsocks -f
 
 ## 开发
 
-源码只用于开发修改和自动构建。普通 VPS 使用 Release 二进制即可。
+源码只用于开发修改和自动构建。普通 VPS 使用 Release 二进制即可，不需要 Go 或 Node。
 
 ```sh
 git clone https://github.com/lyaurora/turnsocks.git
@@ -111,6 +116,8 @@ cd turnsocks
 make check
 make release
 ```
+
+开发构建需要 Go、Node.js 和 npm。`make check` / `make release` 会先构建 `panel/ui` 里的 React 前端，再把构建产物嵌入 `turnsocks-panel`。
 
 如果要从当前源码安装到本机运行目录：
 

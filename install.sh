@@ -30,6 +30,7 @@ PANEL_LISTEN=${PANEL_LISTEN:-127.0.0.1:10808}
 CONFIG_FILE=${CONFIG_FILE:-$INSTALL_DIR/config.env}
 SYSTEMCTL=$(command -v systemctl || true)
 GO_CMD=${GO_CMD:-go}
+NPM_CMD=${NPM_CMD:-npm}
 if [ -z "${SOURCE_CONFIG:-}" ] && [ "$SOURCE_CHECKOUT" = "1" ]; then
   SOURCE_CONFIG=$SCRIPT_DIR/config.env
 fi
@@ -280,6 +281,14 @@ if [ "$BUILD_FROM_SOURCE" = "1" ]; then
       exit 1
     fi
   fi
+  if ! command -v "$NPM_CMD" >/dev/null 2>&1; then
+    echo "BUILD_FROM_SOURCE=1 requires Node.js/npm to build the panel UI." >&2
+    exit 1
+  fi
+  if [ ! -d "panel/ui/node_modules" ]; then
+    "$NPM_CMD" --prefix panel/ui ci
+  fi
+  "$NPM_CMD" --prefix panel/ui run build
   CGO_ENABLED=0 "$GO_CMD" build -trimpath -ldflags "-s -w" -o "$tmp_dir/turnsocks" .
   CGO_ENABLED=0 "$GO_CMD" build -trimpath -ldflags "-s -w" -o "$tmp_dir/turnsocks-panel" ./panel
   installed_from="local source checkout"
