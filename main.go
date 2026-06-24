@@ -41,6 +41,7 @@ const (
 	AttrData               stun.AttrType = 0x0013
 
 	stunMagicCookie        uint32 = 0x2112A442
+	staleNonceCode                = 438
 	maxSTUNMessageLength          = 64 * 1024
 	allocationLifetime            = 10 * time.Minute
 	allocationRefreshEvery        = 5 * time.Minute
@@ -1477,6 +1478,30 @@ func getErrorCode(m *stun.Message) (int, string) {
 	return int(code.Code), string(code.Reason)
 }
 
+func updateAuthFromError(m *stun.Message, realm *stun.Realm, nonce *stun.Nonce) (bool, error) {
+	if m == nil || m.Type.Class != stun.ClassErrorResponse {
+		return false, nil
+	}
+	code, _ := getErrorCode(m)
+	if code != staleNonceCode {
+		return false, nil
+	}
+	if realm == nil || nonce == nil {
+		return true, errors.New("stale nonce response cannot update empty auth state")
+	}
+
+	var newNonce stun.Nonce
+	if err := newNonce.GetFrom(m); err != nil {
+		return true, fmt.Errorf("stale nonce response missing nonce: %w", err)
+	}
+	var newRealm stun.Realm
+	if err := newRealm.GetFrom(m); err == nil && newRealm.String() != "" {
+		*realm = newRealm
+	}
+	*nonce = newNonce
+	return true, nil
+}
+
 func addXORPeerAddress(m *stun.Message, ip net.IP, port int) error {
 	if port < 0 || port > 65535 {
 		return fmt.Errorf("invalid port %d", port)
@@ -1560,20 +1585,32 @@ func allocateTCP(conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, 
 		return stun.Realm{}, stun.Nonce{}, true, fmt.Errorf("allocate auth missing nonce: %w", err)
 	}
 
-	req2 := stun.New()
-	req2.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
-	req2.TransactionID = stun.NewTransactionID()
-	req2.Add(AttrRequestedTransport, []byte{0x06, 0x00, 0x00, 0x00})
 	username, password := turn.auth()
-	if err := addAuthToMessage(req2, username, password, &realm, &nonce); err != nil {
-		return realm, nonce, true, err
-	}
+	for attempt := 0; attempt < 2; attempt++ {
+		req2 := stun.New()
+		req2.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
+		req2.TransactionID = stun.NewTransactionID()
+		req2.Add(AttrRequestedTransport, []byte{0x06, 0x00, 0x00, 0x00})
+		if err := addAuthToMessage(req2, username, password, &realm, &nonce); err != nil {
+			return realm, nonce, true, err
+		}
 
-	res2, err := doSTUN(conn, req2, cfg.Timeout)
-	if err != nil {
-		return realm, nonce, true, err
-	}
-	if res2.Type.Class != stun.ClassSuccessResponse {
+		res2, err := doSTUN(conn, req2, cfg.Timeout)
+		if err != nil {
+			return realm, nonce, true, err
+		}
+		if res2.Type.Class == stun.ClassSuccessResponse {
+			return realm, nonce, true, nil
+		}
+		stale, err := updateAuthFromError(res2, &realm, &nonce)
+		if stale {
+			if err != nil {
+				return realm, nonce, true, err
+			}
+			if attempt == 0 {
+				continue
+			}
+		}
 		c, r := getErrorCode(res2)
 		return realm, nonce, true, fmt.Errorf("allocate auth error %d %s", c, r)
 	}
@@ -1688,35 +1725,8 @@ func newTCPAllocation(cfg Config, turn turnServerConfig) (*tcpAllocation, error)
 
 func (a *tcpAllocation) connect(targetIP net.IP, targetPort int) (net.Conn, error) {
 	a.ctrlMu.Lock()
-	if a.closed.Load() {
-		a.ctrlMu.Unlock()
-		return nil, errors.New("TCP allocation is closed")
-	}
-
-	connectReq := stun.New()
-	connectReq.Type = stun.MessageType{Method: MethodConnect, Class: stun.ClassRequest}
-	connectReq.TransactionID = stun.NewTransactionID()
-	if err := addXORPeerAddress(connectReq, targetIP, targetPort); err != nil {
-		a.ctrlMu.Unlock()
-		return nil, err
-	}
-	if a.needAuth {
-		if err := addAuthToMessage(connectReq, a.username, a.password, &a.realm, &a.nonce); err != nil {
-			a.ctrlMu.Unlock()
-			return nil, err
-		}
-	}
-
-	connectRes, err := doSTUN(a.ctrlConn, connectReq, a.cfg.Timeout)
+	connID, err := a.connectPeerLocked(targetIP, targetPort)
 	a.ctrlMu.Unlock()
-	if err != nil {
-		if isTimeoutError(err) {
-			return nil, turnPeerError(err)
-		}
-		return nil, err
-	}
-
-	connID, err := getConnectionID(connectRes)
 	if err != nil {
 		return nil, err
 	}
@@ -1726,29 +1736,106 @@ func (a *tcpAllocation) connect(targetIP net.IP, targetPort int) (net.Conn, erro
 		return nil, err
 	}
 
-	bind := stun.New()
-	bind.Type = stun.MessageType{Method: MethodConnectionBind, Class: stun.ClassRequest}
-	bind.TransactionID = stun.NewTransactionID()
-	bind.Add(AttrConnectionID, connID)
-	if a.needAuth {
-		if err := addAuthToMessage(bind, a.username, a.password, &a.realm, &a.nonce); err != nil {
-			dataConn.Close()
-			return nil, err
-		}
-	}
-
-	bindRes, err := doSTUN(dataConn, bind, a.cfg.Timeout)
-	if err != nil {
+	if err := a.bindDataConn(dataConn, connID); err != nil {
 		dataConn.Close()
 		return nil, err
 	}
-	if bindRes.Type.Class != stun.ClassSuccessResponse {
-		c, r := getErrorCode(bindRes)
-		dataConn.Close()
-		return nil, fmt.Errorf("connection-bind error %d %s", c, r)
-	}
 
 	return dataConn, nil
+}
+
+func (a *tcpAllocation) connectPeerLocked(targetIP net.IP, targetPort int) ([]byte, error) {
+	if a.closed.Load() {
+		return nil, errors.New("TCP allocation is closed")
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		connectReq := stun.New()
+		connectReq.Type = stun.MessageType{Method: MethodConnect, Class: stun.ClassRequest}
+		connectReq.TransactionID = stun.NewTransactionID()
+		if err := addXORPeerAddress(connectReq, targetIP, targetPort); err != nil {
+			return nil, err
+		}
+		if a.needAuth {
+			if err := addAuthToMessage(connectReq, a.username, a.password, &a.realm, &a.nonce); err != nil {
+				return nil, err
+			}
+		}
+
+		connectRes, err := doSTUN(a.ctrlConn, connectReq, a.cfg.Timeout)
+		if err != nil {
+			if isTimeoutError(err) {
+				return nil, turnPeerError(err)
+			}
+			return nil, err
+		}
+
+		stale, err := a.updateAuthFromErrorLocked(connectRes)
+		if stale {
+			if err != nil {
+				return nil, err
+			}
+			if attempt == 0 {
+				if a.cfg.LogVerbose {
+					log.Printf("TURN TCP nonce refreshed via %s after stale CONNECT nonce", a.turn.Addr)
+				}
+				continue
+			}
+			return nil, fmt.Errorf("connect error %d Stale Nonce after nonce retry", staleNonceCode)
+		}
+		return getConnectionID(connectRes)
+	}
+	return nil, fmt.Errorf("connect error %d Stale Nonce", staleNonceCode)
+}
+
+func (a *tcpAllocation) updateAuthFromErrorLocked(res *stun.Message) (bool, error) {
+	if !a.needAuth {
+		return false, nil
+	}
+	return updateAuthFromError(res, &a.realm, &a.nonce)
+}
+
+func (a *tcpAllocation) bindDataConn(dataConn net.Conn, connID []byte) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		bind := stun.New()
+		bind.Type = stun.MessageType{Method: MethodConnectionBind, Class: stun.ClassRequest}
+		bind.TransactionID = stun.NewTransactionID()
+		bind.Add(AttrConnectionID, connID)
+		if a.needAuth {
+			a.ctrlMu.Lock()
+			err := addAuthToMessage(bind, a.username, a.password, &a.realm, &a.nonce)
+			a.ctrlMu.Unlock()
+			if err != nil {
+				return err
+			}
+		}
+
+		bindRes, err := doSTUN(dataConn, bind, a.cfg.Timeout)
+		if err != nil {
+			return err
+		}
+		a.ctrlMu.Lock()
+		stale, updateErr := a.updateAuthFromErrorLocked(bindRes)
+		a.ctrlMu.Unlock()
+		if stale {
+			if updateErr != nil {
+				return updateErr
+			}
+			if attempt == 0 {
+				if a.cfg.LogVerbose {
+					log.Printf("TURN TCP nonce refreshed via %s after stale ConnectionBind nonce", a.turn.Addr)
+				}
+				continue
+			}
+			return fmt.Errorf("connection-bind error %d Stale Nonce after nonce retry", staleNonceCode)
+		}
+		if bindRes.Type.Class != stun.ClassSuccessResponse {
+			c, r := getErrorCode(bindRes)
+			return fmt.Errorf("connection-bind error %d %s", c, r)
+		}
+		return nil
+	}
+	return fmt.Errorf("connection-bind error %d Stale Nonce", staleNonceCode)
 }
 
 func getConnectionID(res *stun.Message) ([]byte, error) {
@@ -1884,29 +1971,41 @@ func (a *tcpAllocation) refresh() error {
 	if a.closed.Load() {
 		return errors.New("TCP allocation is closed")
 	}
-	return refreshAllocation(a.ctrlConn, a.cfg, a.username, a.password, a.realm, a.nonce, a.needAuth)
+	return refreshAllocation(a.ctrlConn, a.cfg, a.username, a.password, &a.realm, &a.nonce, a.needAuth)
 }
 
-func refreshAllocation(conn net.Conn, cfg Config, username string, password string, realm stun.Realm, nonce stun.Nonce, needAuth bool) error {
-	req := stun.New()
-	req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
-	req.TransactionID = stun.NewTransactionID()
-	addLifetime(req, allocationLifetime)
-	if needAuth {
-		if err := addAuthToMessage(req, username, password, &realm, &nonce); err != nil {
+func refreshAllocation(conn net.Conn, cfg Config, username string, password string, realm *stun.Realm, nonce *stun.Nonce, needAuth bool) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		req := stun.New()
+		req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
+		req.TransactionID = stun.NewTransactionID()
+		addLifetime(req, allocationLifetime)
+		if needAuth {
+			if err := addAuthToMessage(req, username, password, realm, nonce); err != nil {
+				return err
+			}
+		}
+
+		res, err := doSTUN(conn, req, cfg.Timeout)
+		if err != nil {
 			return err
 		}
-	}
-
-	res, err := doSTUN(conn, req, cfg.Timeout)
-	if err != nil {
-		return err
-	}
-	if res.Type.Class != stun.ClassSuccessResponse {
+		if res.Type.Class == stun.ClassSuccessResponse {
+			return nil
+		}
+		stale, err := updateAuthFromError(res, realm, nonce)
+		if stale {
+			if err != nil {
+				return err
+			}
+			if attempt == 0 {
+				continue
+			}
+		}
 		code, reason := getErrorCode(res)
 		return fmt.Errorf("refresh error %d %s", code, reason)
 	}
-	return nil
+	return fmt.Errorf("refresh error %d Stale Nonce", staleNonceCode)
 }
 
 type udpSession struct {
@@ -1921,6 +2020,7 @@ type udpSession struct {
 	realm        stun.Realm
 	nonce        stun.Nonce
 	needAuth     bool
+	authMu       sync.Mutex
 	writeMu      sync.Mutex
 	pendingMu    sync.Mutex
 	pending      map[string]chan *stun.Message
@@ -2302,6 +2402,24 @@ func (s *udpSession) request(req *stun.Message, timeout time.Duration) (*stun.Me
 	}
 }
 
+func (s *udpSession) addAuthToRequest(req *stun.Message) error {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if !s.needAuth {
+		return nil
+	}
+	return addAuthToMessage(req, s.username, s.password, &s.realm, &s.nonce)
+}
+
+func (s *udpSession) updateStaleNonce(res *stun.Message) (bool, error) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if !s.needAuth {
+		return false, nil
+	}
+	return updateAuthFromError(res, &s.realm, &s.nonce)
+}
+
 func (s *udpSession) allocate(timeout time.Duration) error {
 	req := stun.New()
 	req.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
@@ -2338,22 +2456,34 @@ func (s *udpSession) allocate(timeout time.Duration) error {
 	}
 	s.needAuth = true
 
-	req2 := stun.New()
-	req2.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
-	req2.TransactionID = stun.NewTransactionID()
-	req2.Add(AttrRequestedTransport, []byte{0x11, 0x00, 0x00, 0x00})
-	if err := addAuthToMessage(req2, s.username, s.password, &s.realm, &s.nonce); err != nil {
-		return err
-	}
+	for attempt := 0; attempt < 2; attempt++ {
+		req2 := stun.New()
+		req2.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
+		req2.TransactionID = stun.NewTransactionID()
+		req2.Add(AttrRequestedTransport, []byte{0x11, 0x00, 0x00, 0x00})
+		if err := addAuthToMessage(req2, s.username, s.password, &s.realm, &s.nonce); err != nil {
+			return err
+		}
 
-	if err := s.turnConn.writeMessage(req2, timeout); err != nil {
-		return err
-	}
-	res2, err := s.turnConn.readMessage(timeout)
-	if err != nil {
-		return err
-	}
-	if res2.Type.Class != stun.ClassSuccessResponse {
+		if err := s.turnConn.writeMessage(req2, timeout); err != nil {
+			return err
+		}
+		res2, err := s.turnConn.readMessage(timeout)
+		if err != nil {
+			return err
+		}
+		if res2.Type.Class == stun.ClassSuccessResponse {
+			return nil
+		}
+		stale, err := updateAuthFromError(res2, &s.realm, &s.nonce)
+		if stale {
+			if err != nil {
+				return err
+			}
+			if attempt == 0 {
+				continue
+			}
+		}
 		c, r := getErrorCode(res2)
 		return fmt.Errorf("UDP allocate auth error %d %s", c, r)
 	}
@@ -2390,25 +2520,38 @@ func (s *udpSession) refreshLoop() {
 }
 
 func (s *udpSession) refreshAllocation() error {
-	req := stun.New()
-	req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
-	req.TransactionID = stun.NewTransactionID()
-	addLifetime(req, allocationLifetime)
-	if s.needAuth {
-		if err := addAuthToMessage(req, s.username, s.password, &s.realm, &s.nonce); err != nil {
+	for attempt := 0; attempt < 2; attempt++ {
+		req := stun.New()
+		req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
+		req.TransactionID = stun.NewTransactionID()
+		addLifetime(req, allocationLifetime)
+		if err := s.addAuthToRequest(req); err != nil {
 			return err
 		}
-	}
 
-	res, err := s.request(req, s.cfg.Timeout)
-	if err != nil {
-		return err
-	}
-	if res.Type.Class != stun.ClassSuccessResponse {
+		res, err := s.request(req, s.cfg.Timeout)
+		if err != nil {
+			return err
+		}
+		if res.Type.Class == stun.ClassSuccessResponse {
+			return nil
+		}
+		stale, err := s.updateStaleNonce(res)
+		if stale {
+			if err != nil {
+				return err
+			}
+			if attempt == 0 {
+				if s.cfg.LogVerbose {
+					log.Printf("TURN UDP nonce refreshed via %s after stale refresh nonce", s.turn.Addr)
+				}
+				continue
+			}
+		}
 		code, reason := getErrorCode(res)
 		return fmt.Errorf("refresh error %d %s", code, reason)
 	}
-	return nil
+	return fmt.Errorf("refresh error %d Stale Nonce", staleNonceCode)
 }
 
 func (s *udpSession) readTurnLoop() {
@@ -2771,23 +2914,13 @@ func (s *udpSession) ensurePermission(ip net.IP) error {
 	}
 	s.permissionMu.Unlock()
 
-	req := stun.New()
-	req.Type = stun.MessageType{Method: MethodCreatePermission, Class: stun.ClassRequest}
-	req.TransactionID = stun.NewTransactionID()
-	if err := addXORPeerAddress(req, ip, 0); err != nil {
+	req, err := s.buildCreatePermission(ip)
+	if err != nil {
 		return err
-	}
-	if s.needAuth {
-		if err := addAuthToMessage(req, s.username, s.password, &s.realm, &s.nonce); err != nil {
-			return err
-		}
 	}
 
 	// Queue CreatePermission before the Send Indication, but do not wait for
 	// the response. This removes one TURN RTT from the first UDP packet.
-	ch := make(chan *stun.Message, 1)
-	txKey := s.txIDKey(req.TransactionID)
-
 	s.permissionMu.Lock()
 	exp, ok = s.permissions[key]
 	if ok && time.Now().Before(exp) {
@@ -2801,17 +2934,8 @@ func (s *udpSession) ensurePermission(ip net.IP) error {
 	s.permPending[key] = struct{}{}
 	s.permissionMu.Unlock()
 
-	s.pendingMu.Lock()
-	s.pending[txKey] = ch
-	s.pendingMu.Unlock()
-
-	s.writeMu.Lock()
-	err := s.turnConn.writeMessage(req, 5*time.Second)
-	s.writeMu.Unlock()
+	txKey, ch, err := s.sendPermissionRequest(req, 5*time.Second)
 	if err != nil {
-		s.pendingMu.Lock()
-		delete(s.pending, txKey)
-		s.pendingMu.Unlock()
 		s.permissionMu.Lock()
 		delete(s.permPending, key)
 		s.permissionMu.Unlock()
@@ -2820,6 +2944,40 @@ func (s *udpSession) ensurePermission(ip net.IP) error {
 	go s.finishPermission(key, txKey, ch)
 
 	return nil
+}
+
+func (s *udpSession) buildCreatePermission(ip net.IP) (*stun.Message, error) {
+	req := stun.New()
+	req.Type = stun.MessageType{Method: MethodCreatePermission, Class: stun.ClassRequest}
+	req.TransactionID = stun.NewTransactionID()
+	if err := addXORPeerAddress(req, ip, 0); err != nil {
+		return nil, err
+	}
+	if err := s.addAuthToRequest(req); err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+func (s *udpSession) sendPermissionRequest(req *stun.Message, timeout time.Duration) (string, chan *stun.Message, error) {
+	ch := make(chan *stun.Message, 1)
+	txKey := s.txIDKey(req.TransactionID)
+
+	s.pendingMu.Lock()
+	s.pending[txKey] = ch
+	s.pendingMu.Unlock()
+
+	s.writeMu.Lock()
+	err := s.turnConn.writeMessage(req, timeout)
+	s.writeMu.Unlock()
+	if err != nil {
+		s.pendingMu.Lock()
+		delete(s.pending, txKey)
+		s.pendingMu.Unlock()
+		return "", nil, err
+	}
+
+	return txKey, ch, nil
 }
 
 func (s *udpSession) finishPermission(key [4]byte, txKey string, ch chan *stun.Message) {
@@ -2839,6 +2997,15 @@ func (s *udpSession) finishPermission(key [4]byte, txKey string, ch chan *stun.M
 	case res := <-ch:
 		if res.Type.Class != stun.ClassSuccessResponse {
 			code, reason := getErrorCode(res)
+			if code == staleNonceCode {
+				if _, err := s.updateStaleNonce(res); err != nil {
+					if s.cfg.LogVerbose {
+						log.Printf("permission stale nonce update failed: %v", err)
+					}
+				} else if s.retryPermission(key) {
+					return
+				}
+			}
 			if s.cfg.LogVerbose {
 				log.Printf("permission error %d %s", code, reason)
 			}
@@ -2854,6 +3021,61 @@ func (s *udpSession) finishPermission(key [4]byte, txKey string, ch chan *stun.M
 	case <-s.closed:
 		return
 	}
+}
+
+func (s *udpSession) retryPermission(key [4]byte) bool {
+	ip := net.IPv4(key[0], key[1], key[2], key[3])
+	req, err := s.buildCreatePermission(ip)
+	if err != nil {
+		if s.cfg.LogVerbose {
+			log.Printf("permission retry build failed %s: %v", ip.String(), err)
+		}
+		return false
+	}
+
+	txKey, ch, err := s.sendPermissionRequest(req, 5*time.Second)
+	if err != nil {
+		if s.cfg.LogVerbose {
+			log.Printf("permission retry send failed %s: %v", ip.String(), err)
+		}
+		return false
+	}
+	defer func() {
+		s.pendingMu.Lock()
+		delete(s.pending, txKey)
+		s.pendingMu.Unlock()
+	}()
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+
+	select {
+	case res := <-ch:
+		if res.Type.Class == stun.ClassSuccessResponse {
+			s.permissionMu.Lock()
+			s.permissions[key] = time.Now().Add(240 * time.Second)
+			s.permissionMu.Unlock()
+			if s.cfg.LogVerbose {
+				log.Printf("CreatePermission recovered after stale nonce for %s", ip.String())
+			}
+			return true
+		}
+		code, reason := getErrorCode(res)
+		if code == staleNonceCode {
+			if _, err := s.updateStaleNonce(res); err != nil && s.cfg.LogVerbose {
+				log.Printf("permission retry stale nonce update failed: %v", err)
+			}
+		}
+		if s.cfg.LogVerbose {
+			log.Printf("permission retry error %d %s", code, reason)
+		}
+	case <-timer.C:
+		if s.cfg.LogVerbose {
+			log.Printf("CreatePermission retry timed out")
+		}
+	case <-s.closed:
+	}
+	return false
 }
 
 func permissionKey(ip net.IP) ([4]byte, bool) {
