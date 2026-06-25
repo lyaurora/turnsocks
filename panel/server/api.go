@@ -337,8 +337,8 @@ func normalizeDoHURL(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if strings.EqualFold(u.Hostname(), "dns.google") && strings.TrimRight(u.EscapedPath(), "/") == "/dns-query" {
-		u.Path = "/resolve"
+	if strings.EqualFold(u.Hostname(), "dns.google") && strings.TrimRight(u.EscapedPath(), "/") == "/resolve" {
+		u.Path = "/dns-query"
 		u.RawPath = ""
 	}
 	return u.String(), nil
