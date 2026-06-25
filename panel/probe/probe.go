@@ -7,7 +7,6 @@ import (
 
 const (
 	defaultDoH       = "https://cloudflare-dns.com/dns-query"
-	testDownloadURL  = "https://cachefly.cachefly.net/50mb.test"
 	testSingleBytes  = int64(32 * 1024 * 1024)
 	testMultiBytes   = int64(16 * 1024 * 1024)
 	testMultiThreads = 4
@@ -59,6 +58,7 @@ type Speed struct {
 	Bytes   int64   `json:"bytes,omitempty"`
 	Seconds float64 `json:"seconds,omitempty"`
 	Threads int     `json:"threads"`
+	Source  string  `json:"source,omitempty"`
 }
 
 func (r Runner) Test(ctx context.Context, server Server, doh string) Result {

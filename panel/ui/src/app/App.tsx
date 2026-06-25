@@ -259,9 +259,9 @@ function App() {
                                 <span className="hidden text-[hsl(var(--border))] sm:block">|</span>
                                 <span><span className="text-[hsl(var(--muted-foreground))]">UDP转发: </span><span className={test.socksUdp?.ok ? "text-[hsl(var(--ok))]" : "text-[hsl(var(--danger))]"}>{test.socksUdp?.ok ? "OK" : "失败"}</span></span>
                                 <span className="hidden text-[hsl(var(--border))] sm:block">|</span>
-                                <span><span className="text-[hsl(var(--muted-foreground))]">单线: </span>{test.singleThread?.ok ? mbps(test.singleThread.mbps) : "失败"}</span>
+                                <span><span className="text-[hsl(var(--muted-foreground))]">单线: </span>{test.singleThread?.ok ? `${mbps(test.singleThread.mbps)}${test.singleThread.source ? ` · ${test.singleThread.source}` : ""}` : "失败"}</span>
                                 <span className="hidden text-[hsl(var(--border))] sm:block">|</span>
-                                <span><span className="text-[hsl(var(--muted-foreground))]">多线: </span>{test.multiThread?.ok ? mbps(test.multiThread.mbps) : "失败"}</span>
+                                <span><span className="text-[hsl(var(--muted-foreground))]">多线: </span>{test.multiThread?.ok ? `${mbps(test.multiThread.mbps)}${test.multiThread.source ? ` · ${test.multiThread.source}` : ""}` : "失败"}</span>
                               </div>
                             ) : (
                               <div className="flex items-center gap-2 text-[hsl(var(--danger))]">

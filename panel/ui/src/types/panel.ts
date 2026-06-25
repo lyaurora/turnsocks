@@ -26,6 +26,7 @@ export type SpeedMetric = {
   bytes?: number;
   seconds?: number;
   threads?: number;
+  source?: string;
 };
 
 export type ServerTest = {

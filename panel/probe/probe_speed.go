@@ -5,14 +5,42 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 )
+
+type downloadSource struct {
+	Name          string
+	URL           string
+	SupportsRange bool
+}
+
+var testDownloadSources = []downloadSource{
+	{Name: "Cachefly", URL: "https://cachefly.cachefly.net/50mb.test", SupportsRange: true},
+	{Name: "Cloudflare", URL: "https://speed.cloudflare.com/__down", SupportsRange: false},
+}
 
 func measureDownloadSpeed(ctx context.Context, proxyAddr string, threads int, bytesEach int64) Speed {
 	if threads <= 0 {
 		threads = 1
 	}
+	var best Speed
+	for _, source := range testDownloadSources {
+		result := measureDownloadSpeedFromSource(ctx, proxyAddr, threads, bytesEach, source)
+		if result.OK {
+			return result
+		}
+		if result.Bytes > best.Bytes || best.Threads == 0 {
+			best = result
+		}
+	}
+	return best
+}
+
+func measureDownloadSpeedFromSource(ctx context.Context, proxyAddr string, threads int, bytesEach int64, source downloadSource) Speed {
 	result := Speed{Threads: threads}
+	result.Source = source.Name
 	start := time.Now()
 	type partResult struct {
 		bytes int64
@@ -22,7 +50,7 @@ func measureDownloadSpeed(ctx context.Context, proxyAddr string, threads int, by
 	for i := 0; i < threads; i++ {
 		offset := int64(i) * bytesEach
 		go func() {
-			n, err := downloadBytes(ctx, proxyAddr, testDownloadURL, offset, bytesEach)
+			n, err := downloadBytes(ctx, proxyAddr, source, offset, bytesEach)
 			ch <- partResult{bytes: n, err: err}
 		}()
 	}
@@ -65,13 +93,19 @@ func measureDownloadSpeed(ctx context.Context, proxyAddr string, threads int, by
 	return result
 }
 
-func downloadBytes(ctx context.Context, proxyAddr, targetURL string, offset int64, size int64) (int64, error) {
+func downloadBytes(ctx context.Context, proxyAddr string, source downloadSource, offset int64, size int64) (int64, error) {
 	client := httpClientViaSOCKS(proxyAddr, 30*time.Second)
+	targetURL, err := downloadURL(source, size)
+	if err != nil {
+		return 0, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+size-1))
+	if source.SupportsRange {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+size-1))
+	}
 	req.Header.Set("Accept-Encoding", "identity")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -82,4 +116,18 @@ func downloadBytes(ctx context.Context, proxyAddr, targetURL string, offset int6
 		return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return io.Copy(io.Discard, io.LimitReader(resp.Body, size))
+}
+
+func downloadURL(source downloadSource, size int64) (string, error) {
+	if source.SupportsRange {
+		return source.URL, nil
+	}
+	u, err := url.Parse(source.URL)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("bytes", strconv.FormatInt(size, 10))
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
