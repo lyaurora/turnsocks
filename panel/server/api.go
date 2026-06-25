@@ -179,6 +179,12 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	restartNeeded := cfg.Listen != req.Listen || cfg.DoH != req.DoH
+	if cfg.DoH != req.DoH {
+		if err := checkDoHEndpoint(req.DoH); err != nil {
+			writeAPIError(w, fmt.Errorf("DoH 不可用：%w", err))
+			return
+		}
+	}
 	cfg.Listen = req.Listen
 	cfg.DoH = req.DoH
 	if req.PanelAuthEnabled {

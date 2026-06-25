@@ -76,7 +76,7 @@ PANEL_PASSWORD=随机密码
 
 添加和删除节点只写入配置，`turnsocks` 会热加载节点池，不会重启当前代理。切换节点、修改 SOCKS5 或 DoH 会重启 `turnsocks` 让配置生效。
 
-DoH 使用标准 `application/dns-message` 接口。Cloudflare 可用 `https://cloudflare-dns.com/dns-query`，Google 可用 `https://dns.google/dns-query`；如果面板里还保留旧的 `https://dns.google/resolve`，会自动规范为标准接口。
+DoH 使用标准 `application/dns-message` 接口。Cloudflare 可用 `https://cloudflare-dns.com/dns-query`，Google 可用 `https://dns.google/dns-query`；如果面板里还保留旧的 `https://dns.google/resolve`，会自动规范为标准接口。面板保存新的 DoH 前会先做一次解析测试，失败时不会写入配置。
 
 ## 更新
 
