@@ -76,6 +76,8 @@ PANEL_PASSWORD=随机密码
 
 添加和删除节点只写入配置，`turnsocks` 会热加载节点池，不会重启当前代理。切换节点、修改 SOCKS5 或 DoH 会重启 `turnsocks` 让配置生效。
 
+DoH 使用 JSON 接口。Cloudflare 可用 `https://cloudflare-dns.com/dns-query`，Google 建议用 `https://dns.google/resolve`；如果在面板里填了 `https://dns.google/dns-query`，会自动规范为 `https://dns.google/resolve`。
+
 ## 更新
 
 重新运行安装命令即可：

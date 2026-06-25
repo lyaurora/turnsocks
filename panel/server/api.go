@@ -277,9 +277,11 @@ func readConfigRequest(r *http.Request) (configRequest, error) {
 	if err := validateListenAddr(req.Listen); err != nil {
 		return req, err
 	}
-	if err := validateDoHURL(req.DoH); err != nil {
+	normalizedDoH, err := normalizeDoHURL(req.DoH)
+	if err != nil {
 		return req, err
 	}
+	req.DoH = normalizedDoH
 	for name, value := range map[string]string{
 		"LISTEN":         req.Listen,
 		"DOH":            req.DoH,
@@ -325,4 +327,19 @@ func validateDoHURL(raw string) error {
 		return errors.New("DoH 应为 http/https URL")
 	}
 	return nil
+}
+
+func normalizeDoHURL(raw string) (string, error) {
+	if err := validateDoHURL(raw); err != nil {
+		return "", err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if strings.EqualFold(u.Hostname(), "dns.google") && strings.TrimRight(u.EscapedPath(), "/") == "/dns-query" {
+		u.Path = "/resolve"
+		u.RawPath = ""
+	}
+	return u.String(), nil
 }

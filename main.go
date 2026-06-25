@@ -1620,11 +1620,19 @@ func buildDoHURL(endpoint, host string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	normalizeJSONDoHEndpoint(u)
 	q := u.Query()
 	q.Set("name", host)
 	q.Set("type", "A")
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+func normalizeJSONDoHEndpoint(u *url.URL) {
+	if strings.EqualFold(u.Hostname(), "dns.google") && strings.TrimRight(u.EscapedPath(), "/") == "/dns-query" {
+		u.Path = "/resolve"
+		u.RawPath = ""
+	}
 }
 
 func addAuthToMessage(m *stun.Message, username, password string, realm *stun.Realm, nonce *stun.Nonce) error {
