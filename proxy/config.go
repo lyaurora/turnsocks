@@ -1,9 +1,7 @@
 package proxy
 
 import (
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -135,18 +133,4 @@ func readEnvFileValue(path string, wantKey string) (string, error) {
 		return strings.Trim(value, "\"'"), nil
 	}
 	return "", nil
-}
-
-func validateTurnAddr(addr string) error {
-	if addr == "" {
-		return errors.New("TURN server address is empty")
-	}
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("TURN server must be host:port: %w", err)
-	}
-	if host == "" || port == "" {
-		return errors.New("TURN server must include host and port")
-	}
-	return nil
 }

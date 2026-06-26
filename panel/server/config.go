@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+
+	"github.com/lyaurora/turnsocks/turncfg"
 )
 
 func defaultConfigPath() string {
@@ -193,40 +193,16 @@ func normalizeServer(raw string) (string, error) {
 }
 
 func parseServer(raw string) (serverInfo, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return serverInfo{}, errors.New("节点不能为空")
+	server, err := turncfg.ParseServer(raw)
+	if err != nil {
+		return serverInfo{}, err
 	}
-	info := serverInfo{Raw: raw}
-	addr := raw
-	if at := strings.LastIndex(raw, "@"); at >= 0 {
-		cred := raw[:at]
-		addr = raw[at+1:]
-		user, pass, ok := strings.Cut(cred, ":")
-		if !ok || user == "" {
-			return serverInfo{}, errors.New("鉴权格式应为 user:pass@host:port")
-		}
-		info.Username = user
-		info.Password = pass
-		info.HasAuth = true
-	}
-	addr = strings.TrimSpace(addr)
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil || host == "" || port == "" {
-		return serverInfo{}, errors.New("节点格式应为 host:port")
-	}
-	portNum, err := strconv.Atoi(port)
-	if err != nil || portNum <= 0 || portNum > 65535 {
-		return serverInfo{}, errors.New("端口必须是 1-65535")
-	}
-	info.Addr = addr
-	if info.HasAuth {
-		cred := raw[:strings.LastIndex(raw, "@")]
-		info.Raw = cred + "@" + addr
-	} else {
-		info.Raw = addr
-	}
-	return info, nil
+	return serverInfo{
+		Raw:      server.Raw,
+		Addr:     server.Addr,
+		Username: server.Username,
+		HasAuth:  server.HasAuth,
+	}, nil
 }
 
 func buildServerInfo(servers []string, currentAddr string, tests map[string]serverTestResponse) []serverInfo {

@@ -1,13 +1,14 @@
 package proxy
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lyaurora/turnsocks/turncfg"
 )
 
 type turnServerState struct {
@@ -125,31 +126,16 @@ func loadTurnServers(cfg Config) ([]turnServerConfig, error) {
 }
 
 func parseTurnServerConfig(raw string) (turnServerConfig, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return turnServerConfig{}, errors.New("TURN server address is empty")
-	}
-
-	server := turnServerConfig{}
-	addr := raw
-	if at := strings.LastIndex(raw, "@"); at >= 0 {
-		cred := raw[:at]
-		addr = raw[at+1:]
-		user, pass, ok := strings.Cut(cred, ":")
-		if !ok || user == "" {
-			return turnServerConfig{}, errors.New("TURN auth format must be username:password@host:port")
-		}
-		server.Username = user
-		server.Password = pass
-		server.ExplicitAuth = true
-	}
-
-	addr = strings.TrimSpace(addr)
-	if err := validateTurnAddr(addr); err != nil {
+	parsed, err := turncfg.ParseServer(raw)
+	if err != nil {
 		return turnServerConfig{}, err
 	}
-	server.Addr = addr
-	return server, nil
+	return turnServerConfig{
+		Addr:         parsed.Addr,
+		Username:     parsed.Username,
+		Password:     parsed.Password,
+		ExplicitAuth: parsed.HasAuth,
+	}, nil
 }
 
 func (s turnServerConfig) String() string {

@@ -13,13 +13,19 @@ const emptyState: PanelState = {
   service: { active: false }
 };
 
+const topButtonClass = "h-[30px] cursor-pointer rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))]/85 px-[11px] font-mono text-xs text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--accent))]/70 disabled:cursor-wait disabled:opacity-55";
+const smallButtonClass = "h-[34px] cursor-pointer whitespace-nowrap rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))]/85 px-[13px] text-[13px] font-medium text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--accent))]/70 disabled:cursor-wait disabled:opacity-55";
+const primaryButtonClass = "cursor-pointer rounded-full border border-[hsl(var(--primary))] bg-[hsl(var(--primary))] text-[13px] font-medium text-[hsl(var(--primary-foreground))] transition-all hover:brightness-110 disabled:cursor-wait disabled:opacity-55";
+const inputClass = "min-h-[42px] rounded-[calc(0.95rem-2px)] border border-[hsl(var(--input))] bg-[hsl(var(--card))]/85 px-[14px] font-mono text-[13px] text-[hsl(var(--foreground))] transition-all focus:border-[hsl(var(--ring))] focus:shadow-[0_0_0_3px_hsl(var(--ring)/0.16)] focus:outline-none";
+const labelClass = "grid grid-cols-[94px_minmax(0,1fr)] items-center gap-[10px] max-[560px]:grid-cols-1";
+const labelTextClass = "font-mono text-[11px] uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]";
+
 function App() {
   const [state, setState] = useState<PanelState>(emptyState);
   const [serverInput, setServerInput] = useState("");
   const [config, setConfig] = useState<ConfigForm>({ listen: "", doh: "", panelAuthEnabled: false, panelUsername: "", panelPassword: "" });
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(() => (localStorage.getItem("turnsocks-theme") as ThemeMode) || "system");
-  const [currentTime, setCurrentTime] = useState(new Date());
   const [testing, setTesting] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
@@ -53,11 +59,6 @@ function App() {
   useEffect(() => {
     refresh().catch((err) => showToast(errorMessage(err)));
   }, [refresh, showToast]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -173,9 +174,9 @@ function App() {
               <IconDot />
               {state.service.active ? "RUNNING" : "STOPPED"}
             </span>
-            <button className="h-[30px] cursor-pointer rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))]/85 px-[11px] font-mono text-xs text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--accent))]/70 disabled:cursor-wait disabled:opacity-55" disabled={busy} onClick={() => run(() => postJSON<ApiResponse>("/api/restart"))} type="button">重启代理</button>
+            <button className={topButtonClass} disabled={busy} onClick={() => run(() => postJSON<ApiResponse>("/api/restart"))} type="button">重启代理</button>
             <form action="/logout" method="post">
-              <button className="h-[30px] cursor-pointer rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))]/85 px-[11px] font-mono text-xs text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--accent))]/70" type="submit">退出</button>
+              <button className={topButtonClass} type="submit">退出</button>
             </form>
             <div className="flex rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/80 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] dark:shadow-none">
               {(["light", "system", "dark"] as ThemeMode[]).map((mode) => (
@@ -208,7 +209,7 @@ function App() {
               <div className="flex min-h-[44px] items-center justify-between border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/70 px-4">
                 <strong className="text-sm font-semibold text-[hsl(var(--foreground))]">节点管理</strong>
                 <div className="flex items-center gap-2">
-                  <button className="h-[30px] cursor-pointer rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))]/85 px-[11px] font-mono text-xs text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--accent))]/70 disabled:cursor-wait disabled:opacity-55" disabled={locked} onClick={testAllServers} type="button">测试全部</button>
+                  <button className={topButtonClass} disabled={locked} onClick={testAllServers} type="button">测试全部</button>
                   <Chip>首节点为默认</Chip>
                 </div>
               </div>
@@ -217,8 +218,8 @@ function App() {
                 <form className="mb-5 border-b border-[hsl(var(--border))] pb-5" onSubmit={addServer}>
                   <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.12em] text-[hsl(var(--muted-foreground))]">添加 TURN 节点</div>
                   <div className="flex flex-col gap-2.5 sm:flex-row">
-                    <input type="text" placeholder="host:port 或 user:pass@host:port" value={serverInput} onChange={(event) => setServerInput(event.target.value)} className="min-h-[42px] flex-1 rounded-[calc(0.95rem-2px)] border border-[hsl(var(--input))] bg-[hsl(var(--card))]/85 px-[14px] font-mono text-[13px] text-[hsl(var(--foreground))] transition-all focus:border-[hsl(var(--ring))] focus:shadow-[0_0_0_3px_hsl(var(--ring)/0.16)] focus:outline-none" />
-                    <button className="min-h-[42px] cursor-pointer whitespace-nowrap rounded-full border border-[hsl(var(--primary))] bg-[hsl(var(--primary))] px-5 text-[13px] font-medium text-[hsl(var(--primary-foreground))] transition-all hover:brightness-110 disabled:cursor-wait disabled:opacity-55" disabled={busy} type="submit">添加</button>
+                    <input type="text" placeholder="host:port 或 user:pass@host:port" value={serverInput} onChange={(event) => setServerInput(event.target.value)} className={`${inputClass} flex-1`} />
+                    <button className={`${primaryButtonClass} min-h-[42px] whitespace-nowrap px-5`} disabled={busy} type="submit">添加</button>
                   </div>
                 </form>
 
@@ -239,9 +240,9 @@ function App() {
                             </div>
                           </div>
                           <div className="flex shrink-0 items-center justify-end gap-2">
-                            <button disabled={busy || isTesting} onClick={() => testServer(server.raw)} className="h-[34px] cursor-pointer whitespace-nowrap rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))]/85 px-[13px] text-[13px] font-medium text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--accent))]/70 disabled:cursor-wait disabled:opacity-55" type="button">测试</button>
+                            <button disabled={busy || isTesting} onClick={() => testServer(server.raw)} className={smallButtonClass} type="button">测试</button>
                             {!isCurrent && (
-                              <button disabled={busy} onClick={() => run(() => postJSON<ApiResponse>("/api/servers/select", { server: server.raw }))} className="h-[34px] cursor-pointer whitespace-nowrap rounded-full border border-[hsl(var(--primary))] bg-[hsl(var(--primary))] px-[13px] text-[13px] font-medium text-[hsl(var(--primary-foreground))] transition-all hover:brightness-110 disabled:cursor-wait disabled:opacity-55" type="button">切换至此</button>
+                              <button disabled={busy} onClick={() => run(() => postJSON<ApiResponse>("/api/servers/select", { server: server.raw }))} className={`${primaryButtonClass} h-[34px] whitespace-nowrap px-[13px]`} type="button">切换至此</button>
                             )}
                             <button disabled={busy} onClick={() => window.confirm("确定要删除此节点吗？") && run(() => postJSON<ApiResponse>("/api/servers/delete", { server: server.raw }))} className="h-[34px] cursor-pointer whitespace-nowrap rounded-full border border-transparent px-[13px] text-[13px] font-medium text-[hsl(var(--danger))] transition-colors hover:bg-[hsl(var(--danger))]/10 disabled:cursor-wait disabled:opacity-55" type="button">删除</button>
                           </div>
@@ -293,10 +294,6 @@ function App() {
                   <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]">DOH</div>
                   <div className="mt-2 break-all font-mono text-[14px] leading-[1.55] text-[hsl(var(--foreground))]">{state.doh || "-"}</div>
                 </div>
-                <div className="rounded-[1rem] border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/45 p-[14px]">
-                  <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]">当前时间</div>
-                  <div className="mt-2 break-all font-mono text-[14px] leading-[1.55] text-[hsl(var(--foreground))]">{currentTime.toLocaleString("zh-CN", { hour12: false })}</div>
-                </div>
               </div>
             </section>
 
@@ -306,27 +303,27 @@ function App() {
                 <Chip>CONFIG.ENV</Chip>
               </div>
               <form className="grid gap-[10px] p-4 md:p-[18px]" onSubmit={updateConfig}>
-                <label className="grid grid-cols-[94px_minmax(0,1fr)] items-center gap-[10px] max-[560px]:grid-cols-1">
-                  <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]">SOCKS5</span>
-                  <input type="text" value={config.listen} onChange={(event) => updateConfigField("listen", event.target.value)} className="min-h-[42px] rounded-[calc(0.95rem-2px)] border border-[hsl(var(--input))] bg-[hsl(var(--card))]/85 px-[14px] font-mono text-[13px] text-[hsl(var(--foreground))] transition-all focus:border-[hsl(var(--ring))] focus:shadow-[0_0_0_3px_hsl(var(--ring)/0.16)] focus:outline-none" />
+                <label className={labelClass}>
+                  <span className={labelTextClass}>SOCKS5</span>
+                  <input type="text" value={config.listen} onChange={(event) => updateConfigField("listen", event.target.value)} className={inputClass} />
                 </label>
-                <label className="grid grid-cols-[94px_minmax(0,1fr)] items-center gap-[10px] max-[560px]:grid-cols-1">
-                  <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]">DOH</span>
-                  <input type="text" value={config.doh} onChange={(event) => updateConfigField("doh", event.target.value)} className="min-h-[42px] rounded-[calc(0.95rem-2px)] border border-[hsl(var(--input))] bg-[hsl(var(--card))]/85 px-[14px] font-mono text-[13px] text-[hsl(var(--foreground))] transition-all focus:border-[hsl(var(--ring))] focus:shadow-[0_0_0_3px_hsl(var(--ring)/0.16)] focus:outline-none" />
+                <label className={labelClass}>
+                  <span className={labelTextClass}>DOH</span>
+                  <input type="text" value={config.doh} onChange={(event) => updateConfigField("doh", event.target.value)} className={inputClass} />
                 </label>
                 <label className="inline-flex min-h-[34px] cursor-pointer items-center gap-[10px]">
                   <input type="checkbox" checked={config.panelAuthEnabled} onChange={(event) => updateConfigField("panelAuthEnabled", event.target.checked)} className="h-[18px] w-[18px] cursor-pointer accent-[hsl(var(--primary))]" />
                   <span className="text-[13px] text-[hsl(var(--muted-foreground))]">面板登录</span>
                 </label>
-                <label className="grid grid-cols-[94px_minmax(0,1fr)] items-center gap-[10px] max-[560px]:grid-cols-1">
-                  <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]">用户</span>
-                  <input type="text" value={config.panelUsername} onChange={(event) => updateConfigField("panelUsername", event.target.value)} className="min-h-[42px] rounded-[calc(0.95rem-2px)] border border-[hsl(var(--input))] bg-[hsl(var(--card))]/85 px-[14px] font-mono text-[13px] text-[hsl(var(--foreground))] transition-all focus:border-[hsl(var(--ring))] focus:shadow-[0_0_0_3px_hsl(var(--ring)/0.16)] focus:outline-none" />
+                <label className={labelClass}>
+                  <span className={labelTextClass}>用户</span>
+                  <input type="text" value={config.panelUsername} onChange={(event) => updateConfigField("panelUsername", event.target.value)} className={inputClass} />
                 </label>
-                <label className="grid grid-cols-[94px_minmax(0,1fr)] items-center gap-[10px] max-[560px]:grid-cols-1">
-                  <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]">密码</span>
-                  <input type="password" placeholder="留空不修改" value={config.panelPassword} onChange={(event) => updateConfigField("panelPassword", event.target.value)} className="min-h-[42px] rounded-[calc(0.95rem-2px)] border border-[hsl(var(--input))] bg-[hsl(var(--card))]/85 px-[14px] font-mono text-[13px] text-[hsl(var(--foreground))] transition-all focus:border-[hsl(var(--ring))] focus:shadow-[0_0_0_3px_hsl(var(--ring)/0.16)] focus:outline-none" />
+                <label className={labelClass}>
+                  <span className={labelTextClass}>密码</span>
+                  <input type="password" placeholder="留空不修改" value={config.panelPassword} onChange={(event) => updateConfigField("panelPassword", event.target.value)} className={inputClass} />
                 </label>
-                <button className="mt-[10px] min-h-[42px] w-full cursor-pointer rounded-full border border-[hsl(var(--primary))] bg-[hsl(var(--primary))] text-[13px] font-medium text-[hsl(var(--primary-foreground))] transition-all hover:brightness-110 disabled:cursor-wait disabled:opacity-55" disabled={busy} type="submit">保存配置</button>
+                <button className={`${primaryButtonClass} mt-[10px] min-h-[42px] w-full`} disabled={busy} type="submit">保存配置</button>
               </form>
             </section>
           </aside>

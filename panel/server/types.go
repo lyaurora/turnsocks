@@ -46,7 +46,6 @@ type serverInfo struct {
 	Raw      string              `json:"raw"`
 	Addr     string              `json:"addr"`
 	Username string              `json:"username,omitempty"`
-	Password string              `json:"-"`
 	HasAuth  bool                `json:"hasAuth"`
 	Current  bool                `json:"current"`
 	Default  bool                `json:"default"`
