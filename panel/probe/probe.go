@@ -8,7 +8,7 @@ import (
 const (
 	defaultDoH       = "https://cloudflare-dns.com/dns-query"
 	testSingleBytes  = int64(32 * 1024 * 1024)
-	testMultiBytes   = int64(16 * 1024 * 1024)
+	testMultiBytes   = int64(20 * 1024 * 1024)
 	testMultiThreads = 4
 )
 
