@@ -4,7 +4,7 @@ import (
 	"io/fs"
 	"sync"
 
-	"turn-proxy/panel/probe"
+	"github.com/lyaurora/turnsocks/panel/probe"
 )
 
 const (

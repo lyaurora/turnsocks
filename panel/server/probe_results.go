@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 
-	"turn-proxy/panel/probe"
+	"github.com/lyaurora/turnsocks/panel/probe"
 )
 
 func (a *app) readServerTests() map[string]serverTestResponse {

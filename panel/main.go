@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"turn-proxy/panel/server"
+	"github.com/lyaurora/turnsocks/panel/server"
 )
 
 //go:embed ui/dist

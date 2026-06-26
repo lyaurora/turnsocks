@@ -1,4 +1,4 @@
-module turn-proxy
+module github.com/lyaurora/turnsocks
 
 go 1.22.4
 

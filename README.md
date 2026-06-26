@@ -24,10 +24,10 @@ curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh 
 默认安装内容：
 
 ```text
-安装目录：/opt/turn-proxy
+安装目录：/opt/turnsocks
 SOCKS5：  127.0.0.1:1080
 面板：    127.0.0.1:10808
-配置：    /opt/turn-proxy/config.env
+配置：    /opt/turnsocks/config.env
 ```
 
 首次安装会写入占位节点 `127.0.0.1:3478`，只用于让服务和面板先启动。安装完成后进入面板，添加真实 TURN 节点并切换到该节点。
@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh 
 如需指定安装目录或面板监听地址：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh | sudo env INSTALL_DIR="$HOME/turn-proxy" PANEL_LISTEN=127.0.0.1:10808 sh
+curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh | sudo env INSTALL_DIR="$HOME/turnsocks" PANEL_LISTEN=127.0.0.1:10808 sh
 ```
 
 ## 面板
@@ -172,7 +172,7 @@ make release
 如果要从当前源码安装到本机运行目录：
 
 ```sh
-BUILD_FROM_SOURCE=1 INSTALL_DIR="$HOME/turn-proxy" ./install.sh
+BUILD_FROM_SOURCE=1 INSTALL_DIR="$HOME/turnsocks" ./install.sh
 ```
 
 推送到 `main` 后，GitHub Actions 会刷新固定的 `latest` Release，并生成 Linux amd64、Linux arm64 静态二进制。

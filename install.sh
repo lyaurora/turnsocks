@@ -20,7 +20,7 @@ if [ -z "${INSTALL_DIR:-}" ]; then
   if [ "$SOURCE_CHECKOUT" = "1" ]; then
     INSTALL_DIR=$SCRIPT_DIR
   else
-    INSTALL_DIR=/opt/turn-proxy
+    INSTALL_DIR=/opt/turnsocks
   fi
 fi
 if [ -z "${RUN_USER:-}" ]; then
