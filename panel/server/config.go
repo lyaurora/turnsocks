@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/lyaurora/turnsocks/turncfg"
 )
@@ -250,6 +251,27 @@ func readRuntimeState(path string) runtimeState {
 	}
 	state.CurrentAddr = strings.TrimSpace(state.CurrentAddr)
 	return state
+}
+
+func writeRuntimeState(path string, currentAddr string) error {
+	if path == "" {
+		return nil
+	}
+	state := runtimeState{
+		CurrentAddr: currentAddr,
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+	}
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func containsServer(servers []string, server string) bool {
