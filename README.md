@@ -1,27 +1,24 @@
 # turnsocks
 
-`turnsocks` 是一个利用 TURN 服务器转发代理流量的小工具。它会在本机启动 SOCKS5 入口，客户端连接本地 SOCKS5 后，实际出站流量通过配置的 TURN 节点中转出去。
-
-项目重点是 **TURN 转发代理**。SOCKS5 只是本地接入层，方便浏览器、系统代理、sing-box 等客户端接入。
+`turnsocks` 是一款基于 TURN 协议的轻量级流量转发工具。程序在本地提供 SOCKS5 代理入口，将客户端的出站流量通过配置的 TURN 节点进行中转。
 
 ## 功能
 
-- 本地 SOCKS5 TCP/UDP 入口，默认监听 `127.0.0.1:1080`。
-- TCP 流量通过 TURN TCP relay 转发。
-- UDP 流量优先走 `turnsocks -> TURN 服务器` 的 UDP 连接；如果这段 UDP 不可用，会用 TCP 连接 TURN 服务器承载 UDP 转发。
-- 域名目标通过标准 DoH 解析为 IPv4，并做短暂缓存。
-- 支持多个 TURN 节点，面板可添加、删除、切换、测试节点。
-- 面板保存节点最近一次测试结果，方便之后判断节点质量。
+- **TURN 转发**：支持通过 TURN TCP relay 转发 TCP 流量；优先通过 UDP 连接转发 UDP 流量，不可用时自动回退为基于 TURN-over-TCP 的 UDP 转发。
+- **SOCKS5 入口**：提供本地 SOCKS5 TCP/UDP 接入层（默认 `127.0.0.1:1080`），兼容浏览器及各类代理客户端。
+- **内置 DoH**：所有域名目标均通过标准的 DNS over HTTPS 解析为 IPv4 并缓存。
+- **节点管理**：支持配置多个 TURN 节点。
+- **Web 面板**：内置控制面板，支持节点测速、切换，及服务配置的热加载。
 
 ## 安装
 
-使用安装脚本下载 Release 二进制并创建 systemd 服务：
+使用安装脚本下载最新 Release 二进制文件，并创建 systemd 服务：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh | sudo sh
 ```
 
-默认安装内容：
+默认安装及配置路径：
 
 ```text
 安装目录：/opt/turnsocks
@@ -30,15 +27,15 @@ SOCKS5：  127.0.0.1:1080
 配置：    /opt/turnsocks/config.env
 ```
 
-首次安装会写入占位节点 `127.0.0.1:3478`，只用于让服务和面板先启动。安装完成后进入面板，添加真实 TURN 节点并切换到该节点。
+*注：首次安装会写入默认节点 `127.0.0.1:3478` 用于初始化服务。安装完成后，请登录面板添加真实的 TURN 节点并切换启用。*
 
-如需在安装时写入节点：
+**自定义节点安装：**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh | sudo env TURN_SERVERS="user:password@turn.example.com:3478,backup.example.com:3478" sh
 ```
 
-如需指定安装目录或面板监听地址：
+**自定义安装目录及面板监听地址：**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh | sudo env INSTALL_DIR="$HOME/turnsocks" PANEL_LISTEN=127.0.0.1:10808 sh
@@ -46,44 +43,31 @@ curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh 
 
 ## 面板
 
-面板默认只监听本机。远程访问建议使用 SSH 转发：
+面板默认仅监听本地环回地址。远程管理建议通过 SSH 端口转发安全接入：
 
 ```sh
 ssh -L 10808:127.0.0.1:10808 user@your-vps
 ```
 
-然后在浏览器打开：
+随后通过浏览器访问：
 
 ```text
 http://127.0.0.1:10808
 ```
 
-面板支持：
+**主要功能：**
+- **节点管理**：添加、删除、切换 TURN 节点，并保存历史测速结果。
+- **测速诊断**：测试节点的 TCP 延迟、UDP 转发可用性、单/多线程带宽。
+- **配置修改**：修改 SOCKS5 监听端口、DoH 地址及面板登录账号。
+- **访问认证**：首次安装会在 `config.env` 生成随机密码，当 `PANEL_USERNAME` 和 `PANEL_PASSWORD` 均配置时即启用网页登录；留空则禁用。
 
-- 添加、删除、切换 TURN 节点。
-- 查看默认节点和当前运行节点。
-- 测试 TCP 延迟、UDP 转发、单线程带宽、多线程带宽。
-- 修改 SOCKS5 监听、DoH、面板账号密码。
-- 保存每个节点最近一次测试结果，再次测试会覆盖旧结果。
+*注：节点的添加与删除会热加载配置。切换默认节点或修改端口、DoH 地址将触发代理服务重启以应用变更。*
+*测速诊断使用 Cloudflare 下载源，用于评估节点基础质量，实际访问速度由 TURN 出口至目标站点的网络状况决定。*
 
-添加和删除节点只写入配置，`turnsocks` 会热加载节点池，不会重启当前代理。切换节点、修改 SOCKS5 或 DoH 会重启 `turnsocks` 让配置生效。
-
-节点测速使用 Cloudflare 下载源。它更适合作为节点基础质量测试；特殊网站的实际速度仍然取决于该 TURN 出口到目标站的线路。
-
-## 登录
-
-首次安装创建 `config.env` 时会生成：
-
-```env
-PANEL_USERNAME=admin
-PANEL_PASSWORD=随机密码
-```
-
-两个值都有内容时启用网页登录；留空则不启用。面板里也可以修改账号密码，保存后自动生效。
 
 ## 配置
 
-配置文件采用环境变量文件格式：
+配置文件采用标准的 `.env` 环境变量格式：
 
 ```env
 LISTEN=127.0.0.1:1080
@@ -93,35 +77,35 @@ PANEL_USERNAME=admin
 PANEL_PASSWORD=your-panel-password
 ```
 
-`TURN_SERVERS` 用英文逗号分隔。节点格式：
+`TURN_SERVERS` 支持多个节点，以英文逗号分隔：
 
 ```text
 无鉴权：host:port
 有鉴权：user:password@host:port
 ```
 
-第一个节点是默认节点；面板切换节点时会把选中的节点移动到第一位并重启代理。
+配置列表中的首个节点为默认出口。在面板中切换节点时，系统会自动将选中节点置顶并重启代理生效。
 
-DoH 使用标准 `application/dns-message` 接口。推荐：
+DoH 采用标准 `application/dns-message` 接口。推荐使用：
 
 ```text
 Cloudflare: https://cloudflare-dns.com/dns-query
 Google:     https://dns.google/dns-query
 ```
 
-如果面板里还保留旧的 `https://dns.google/resolve`，会自动规范为 `https://dns.google/dns-query`。面板保存新的 DoH 前会先做一次解析测试，失败时不会写入配置。
+面板在保存 DoH 变更前会执行连通性测试，以防止错误配置导致解析中断。
 
 ## 更新
 
-重新运行安装脚本即可：
+再次执行安装脚本即可覆盖更新：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh | sudo sh
 ```
 
-脚本会下载 GitHub `latest` Release 二进制，覆盖本地 `turnsocks` 和 `turnsocks-panel`，然后重启服务。
+脚本会自动拉取 GitHub 最新 Release 的二进制文件，覆盖主程序及面板组件，并重启服务。
 
-这些本机文件会保留：
+以下本地配置和数据将被保留：
 
 ```text
 config.env
@@ -142,23 +126,18 @@ sudo journalctl -u turnsocks -f
 整体链路：
 
 ```text
-客户端
-  -> 本机 SOCKS5
-  -> turnsocks
-  -> TURN 服务器
-  -> 目标网站
+客户端 -> 本机 SOCKS5 -> turnsocks -> TURN 服务器 -> 目标网站
 ```
 
 技术细节：
 
-- 基础 TURN 流程基于 RFC 5766，使用 allocation、permission 和 indication 转发 UDP。
-- TCP relay 基于 RFC 6062，使用 TCP allocation、`CONNECT`、`CONNECTION-BIND` 建立中转连接。
-- UDP 转发使用 `CREATE-PERMISSION`、`SEND` indication 和 `DATA` indication。
-- IPv6 relay 对应 RFC 6156；项目目前只实现 IPv4 目标地址。
+- 基础 TURN 流程基于 [RFC 5766](https://tools.ietf.org/html/rfc5766)；UDP 转发通过 `CREATE-PERMISSION`、`SEND/DATA indication` 实现。
+- TCP relay 基于 [RFC 6062](https://tools.ietf.org/html/rfc6062)，使用 `CONNECT` 和 `CONNECTION-BIND` 建立中转连接。
+- IPv6 relay（[RFC 6156](https://tools.ietf.org/html/rfc6156)）目前尚未实现，仅支持 IPv4 目标地址转发。
 
 ## 开发
 
-源码用于开发修改和自动构建：
+本项目提供用于开发及构建的源码支持：
 
 ```sh
 git clone https://github.com/lyaurora/turnsocks.git
@@ -167,18 +146,23 @@ make check
 make release
 ```
 
-开发构建需要 Go、Node.js 和 npm。`make check` / `make release` 会先构建 `panel/ui` 里的 React 前端，再把构建产物嵌入 `turnsocks-panel`。安装脚本使用 Release 二进制，不需要本地构建。
+构建依赖于 Go、Node.js 和 npm。`make check` / `make release` 将自动构建 `panel/ui` 的 React 前端并嵌入二进制文件。普通用户建议直接使用安装脚本部署 Release 版本，无需本地构建。
 
-如果要从当前源码安装到本机运行目录：
+从源码编译并安装到本地运行目录：
 
 ```sh
 BUILD_FROM_SOURCE=1 INSTALL_DIR="$HOME/turnsocks" ./install.sh
 ```
 
-推送到 `main` 后，GitHub Actions 会刷新固定的 `latest` Release，并生成 Linux amd64、Linux arm64 静态二进制。
-
 ## 限制
 
 - 暂不支持 IPv6 目标地址。
-- 暂不处理 SOCKS5 UDP 请求头里的 `FRAG` 分片字段，只接受 `FRAG=0` 的普通 UDP 包。常见 DNS、QUIC 和应用 UDP 流量通常不受影响。
-- 面板建议通过 SSH 转发、Nginx 反代或私有隧道访问，不要直接暴露到公网。
+- 暂未处理 SOCKS5 UDP `FRAG` 分片标识，仅接受 `FRAG=0` 的数据包（常见 DNS、QUIC 等协议不受影响）。
+
+## 思路来源
+
+本项目的思路来源于 [ToiCF/CF-Workers-TURN](https://github.com/ToiCF/CF-Workers-TURN)。
+
+## 开源协议
+
+本项目使用 GPL-3.0 License 开源，详见 [LICENSE](LICENSE)。
