@@ -310,6 +310,21 @@ func (p *turnPool) markFailure(server turnServerConfig, err error) {
 	}
 }
 
+func (p *turnPool) markUDPSuccess(server turnServerConfig) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for i := range p.servers {
+		if p.servers[i].Server.String() == server.String() {
+			p.servers[i].UDPFailedUntil = time.Time{}
+			if strings.HasPrefix(p.servers[i].LastError, "udp: ") {
+				p.servers[i].LastError = ""
+			}
+			return
+		}
+	}
+}
+
 func (p *turnPool) udpAllowed(server turnServerConfig) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()

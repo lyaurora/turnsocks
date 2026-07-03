@@ -86,13 +86,13 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 		var err error
 		if cfg.TurnPool.udpAllowed(turn) {
 			if s, turnAddr, ok := cfg.UDPPrewarm.take(cfg, turn, clientTCP, localUDP); ok {
-				cfg.TurnPool.markSuccess(turn)
+				cfg.TurnPool.markUDPSuccess(turn)
 				return s, turnAddr, nil
 			}
 			var s *udpSession
 			s, err = newUDPSessionWithNetwork(cfg, clientTCP, localUDP, turn, "udp")
 			if err == nil {
-				cfg.TurnPool.markSuccess(turn)
+				cfg.TurnPool.markUDPSuccess(turn)
 				go prewarmUDPAllocation(cfg)
 				return s, turn.Addr + "/udp", nil
 			}
@@ -107,11 +107,9 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 
 		s, tcpErr := newUDPSessionWithNetwork(cfg, clientTCP, localUDP, turn, "tcp")
 		if tcpErr == nil {
-			cfg.TurnPool.markSuccess(turn)
 			return s, turn.Addr + "/tcp", nil
 		}
 		errs = append(errs, fmt.Errorf("%s/tcp: %w", turn.Addr, tcpErr))
-		cfg.TurnPool.markFailure(turn, tcpErr)
 		if err != nil {
 			log.Printf("UDP TURN candidate failed via %s: %v", turn.Addr, errors.Join(err, tcpErr))
 		} else {
@@ -516,7 +514,7 @@ func (s *udpSession) refreshLoop() {
 					return
 				}
 				if retryErr := s.refreshAllocation(); retryErr != nil {
-					s.cfg.TurnPool.markFailure(s.turn, retryErr)
+					s.cfg.TurnPool.markUDPFailure(s.turn, retryErr)
 					log.Printf("UDP allocation refresh failed via %s after retry: %v", s.turn.Addr, errors.Join(err, retryErr))
 					s.close()
 					return
