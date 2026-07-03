@@ -27,6 +27,7 @@ type udpSession struct {
 	needAuth     bool
 	authMu       sync.Mutex
 	writeMu      sync.Mutex
+	trafficOnce  sync.Once
 	pendingMu    sync.Mutex
 	pending      map[string]chan *stun.Message
 	permissions  map[[4]byte]time.Time
@@ -806,7 +807,16 @@ func (s *udpSession) readLocalUDPLoop() {
 			s.close()
 			return
 		}
+		s.markUDPTraffic()
 	}
+}
+
+func (s *udpSession) markUDPTraffic() {
+	s.trafficOnce.Do(func() {
+		if s.cfg.TurnPool != nil {
+			s.cfg.TurnPool.markSuccess(s.turn)
+		}
+	})
 }
 
 func (s *udpSession) buildSendIndication(ip net.IP, port int, payload []byte) ([]byte, error) {

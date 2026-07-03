@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -30,4 +31,32 @@ func writeRuntimeState(path string, currentAddr string) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func readRuntimeState(path string) runtimeState {
+	if path == "" {
+		return runtimeState{}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return runtimeState{}
+	}
+	var state runtimeState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return runtimeState{}
+	}
+	state.CurrentAddr = strings.TrimSpace(state.CurrentAddr)
+	return state
+}
+
+func initialTurnServer(servers []turnServerConfig, state runtimeState) turnServerConfig {
+	if len(servers) == 0 {
+		return turnServerConfig{}
+	}
+	for _, server := range servers {
+		if server.Addr == state.CurrentAddr {
+			return server
+		}
+	}
+	return servers[0]
 }
