@@ -1,17 +1,17 @@
-import type { ReactNode } from "react";
+import { ReactNode } from "react";
 
-export function Chip({ children, active, warn, danger }: { children: ReactNode; active?: boolean; warn?: boolean; danger?: boolean }) {
-  let colorClass = "border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--muted-foreground))]";
-  if (active) colorClass = "border-[hsl(var(--ok))]/30 bg-[hsl(var(--ok))]/10 text-[hsl(var(--ok))]";
-  if (warn) colorClass = "border-[hsl(var(--warn))]/30 bg-[hsl(var(--warn))]/10 text-[hsl(var(--warn))]";
-  if (danger) colorClass = "border-[hsl(var(--danger))]/30 bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]";
+export function Chip({ children, active, warn }: { children: ReactNode; active?: boolean; warn?: boolean }) {
+  let style = "border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]";
+  if (active) style = "border-[hsl(var(--ok))]/30 bg-[hsl(var(--ok))]/10 text-[hsl(var(--ok))]";
+  else if (warn) style = "border-[hsl(var(--warn))]/30 bg-[hsl(var(--warn))]/10 text-[hsl(var(--warn))]";
+
   return (
-    <span className={`inline-flex min-h-[30px] items-center rounded-full border px-[11px] font-mono text-[11px] uppercase tracking-[0.12em] whitespace-nowrap ${colorClass}`}>
+    <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-2 uppercase tracking-wider ${style}`}>
       {children}
     </span>
   );
 }
 
 export function IconDot() {
-  return <span className="h-2 w-2 rounded-full bg-current" />;
+  return <span className="h-1.5 w-1.5 rounded-full bg-current" />;
 }
