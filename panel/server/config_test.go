@@ -19,3 +19,17 @@ func TestWriteRuntimeState(t *testing.T) {
 		t.Fatal("missing updated_at")
 	}
 }
+
+func TestLocalCheckAddr(t *testing.T) {
+	tests := map[string]string{
+		"127.0.0.1:1080": "127.0.0.1:1080",
+		"0.0.0.0:1080":   "127.0.0.1:1080",
+		":1080":          "127.0.0.1:1080",
+		"[::]:1080":      "[::1]:1080",
+	}
+	for input, want := range tests {
+		if got := localCheckAddr(input); got != want {
+			t.Errorf("localCheckAddr(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

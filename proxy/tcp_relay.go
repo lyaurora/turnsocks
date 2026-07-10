@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pion/stun"
+	"github.com/pion/stun/v3"
 )
 
 type tcpAllocation struct {
@@ -19,6 +19,7 @@ type tcpAllocation struct {
 	username    string
 	password    string
 	ctrlConn    net.Conn
+	serverAddr  string
 	realm       stun.Realm
 	nonce       stun.Nonce
 	needAuth    bool
@@ -194,6 +195,7 @@ func newTCPAllocation(cfg Config, turn turnServerConfig) (*tcpAllocation, error)
 		username:    username,
 		password:    password,
 		ctrlConn:    ctrlConn,
+		serverAddr:  connectedTurnAddr(ctrlConn, turn.Addr),
 		realm:       realm,
 		nonce:       nonce,
 		needAuth:    needAuth,
@@ -213,7 +215,7 @@ func (a *tcpAllocation) connect(targetIP net.IP, targetPort int) (net.Conn, erro
 		return nil, err
 	}
 
-	dataConn, err := dialTCPKeepAlive(a.turn.Addr, shorterTimeout(a.cfg.Timeout, turnTCPDialTimeout))
+	dataConn, err := dialTCPKeepAlive(a.serverAddr, shorterTimeout(a.cfg.Timeout, turnTCPDialTimeout))
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +226,13 @@ func (a *tcpAllocation) connect(targetIP net.IP, targetPort int) (net.Conn, erro
 	}
 
 	return dataConn, nil
+}
+
+func connectedTurnAddr(conn net.Conn, fallback string) string {
+	if conn != nil && conn.RemoteAddr() != nil {
+		return conn.RemoteAddr().String()
+	}
+	return fallback
 }
 
 func (a *tcpAllocation) connectPeerLocked(targetIP net.IP, targetPort int) ([]byte, error) {

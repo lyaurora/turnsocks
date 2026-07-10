@@ -81,15 +81,19 @@ function App() {
     return () => media?.removeEventListener("change", applyTheme);
   }, [theme]);
 
-  async function run(action: () => Promise<ApiResponse>) {
-    if (busy) return;
+  async function run(action: () => Promise<ApiResponse>, refreshAfter = true) {
+    if (busy) return false;
     setBusy(true);
     try {
       const res = await action();
       showToast(res.message || "完成");
-      await refresh();
+      if (refreshAfter) {
+        await refresh();
+      }
+      return true;
     } catch (err) {
       showToast(errorMessage(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -143,7 +147,12 @@ function App() {
 
   async function updateConfig(event: FormEvent) {
     event.preventDefault();
-    await run(async () => {
+    const loginChanged = config.panelAuthEnabled && (
+      !state.panelAuthEnabled ||
+      config.panelUsername.trim() !== state.panelUsername ||
+      config.panelPassword.trim() !== ""
+    );
+    const ok = await run(async () => {
       const res = await postJSON<ApiResponse>("/api/config/update", {
         listen: config.listen.trim(),
         doh: config.doh.trim(),
@@ -154,7 +163,10 @@ function App() {
       setConfig((prev) => ({ ...prev, panelPassword: "" }));
       setSettingsDirty(false);
       return res;
-    });
+    }, !loginChanged);
+    if (ok && loginChanged) {
+      window.location.assign("/login");
+    }
   }
 
   function updateConfigField<K extends keyof ConfigForm>(key: K, value: ConfigForm[K]) {

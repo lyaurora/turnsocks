@@ -16,8 +16,11 @@ import (
 
 type dnsEntry struct {
 	IP       net.IP
+	Err      error
 	ExpireAt time.Time
 }
+
+const dnsNegativeTTL = 15 * time.Second
 
 type dnsLookupResult struct {
 	IP  net.IP
@@ -52,7 +55,7 @@ func resolveDoH(host string, cfg Config) (net.IP, error) {
 	if v, ok := dnsCache.Load(queryHost); ok {
 		e := v.(dnsEntry)
 		if time.Now().Before(e.ExpireAt) {
-			return e.IP, nil
+			return e.IP, e.Err
 		}
 		dnsCache.Delete(queryHost)
 	}
@@ -118,6 +121,7 @@ func queryDoH(queryHost string, cfg Config) (net.IP, error) {
 	}
 	ip, ttl, err := parseDNSAResponse(raw, queryID, queryHost, cfg.DNSTTL)
 	if err != nil {
+		dnsCache.Store(queryHost, dnsEntry{Err: err, ExpireAt: time.Now().Add(dnsNegativeTTL)})
 		return nil, err
 	}
 	dnsCache.Store(queryHost, dnsEntry{IP: ip, ExpireAt: time.Now().Add(ttl)})

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/stun"
+	"github.com/pion/stun/v3"
 )
 
 type udpSession struct {
@@ -366,6 +366,13 @@ func (s *udpSession) close() {
 	})
 }
 
+func (s *udpSession) fail() {
+	if s.clientTCP != nil {
+		_ = s.clientTCP.Close()
+	}
+	s.close()
+}
+
 func (s *udpSession) isClosed() bool {
 	select {
 	case <-s.closed:
@@ -517,7 +524,7 @@ func (s *udpSession) refreshLoop() {
 				if retryErr := s.refreshAllocation(); retryErr != nil {
 					s.cfg.TurnPool.markUDPFailure(s.turn, retryErr)
 					log.Printf("UDP allocation refresh failed via %s after retry: %v", s.turn.Addr, errors.Join(err, retryErr))
-					s.close()
+					s.fail()
 					return
 				}
 				if s.cfg.LogVerbose {
@@ -569,7 +576,7 @@ func (s *udpSession) readTurnLoop() {
 	for {
 		m, data, ok, err := s.turnConn.readMessageOrData(0)
 		if err != nil {
-			s.close()
+			s.fail()
 			return
 		}
 		if ok {
@@ -762,7 +769,7 @@ func (s *udpSession) readLocalUDPLoop() {
 	for {
 		n, caddr, err := s.localUDP.ReadFromUDP(buf)
 		if err != nil {
-			s.close()
+			s.fail()
 			return
 		}
 
@@ -804,7 +811,7 @@ func (s *udpSession) readLocalUDPLoop() {
 		err = s.turnConn.writeRaw(raw, s.cfg.Timeout)
 		s.writeMu.Unlock()
 		if err != nil {
-			s.close()
+			s.fail()
 			return
 		}
 		s.markUDPTraffic()

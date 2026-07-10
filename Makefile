@@ -11,7 +11,8 @@ LDFLAGS ?= -s -w
 .PHONY: panel-ui build release check clean
 
 panel-ui:
-	@if [ ! -d "$(PANEL_UI_DIR)/node_modules" ]; then $(NPM) --prefix "$(PANEL_UI_DIR)" ci; fi
+	@if [ ! -f "$(PANEL_UI_DIR)/node_modules/.package-lock.json" ] || [ "$(PANEL_UI_DIR)/package-lock.json" -nt "$(PANEL_UI_DIR)/node_modules/.package-lock.json" ]; then $(NPM) --prefix "$(PANEL_UI_DIR)" ci; fi
+	@$(NPM) --prefix "$(PANEL_UI_DIR)" run typecheck
 	@$(NPM) --prefix "$(PANEL_UI_DIR)" run build
 
 build: panel-ui

@@ -49,10 +49,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete latest --yes --cleanup-tag || true
           git tag -f latest "$GITHUB_SHA"
           git push -f origin latest
-          gh release create latest dist/* \
-            --title "latest" \
-            --notes "Automated latest build from ${GITHUB_SHA}." \
-            --latest
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest dist/turnsocks-linux-* dist/turnsocks-panel-linux-* --clobber
+            gh release upload latest dist/SHA256SUMS --clobber
+            gh release edit latest --title "latest" --notes "Automated latest build from ${GITHUB_SHA}." --latest
+          else
+            gh release create latest dist/* \
+              --title "latest" \
+              --notes "Automated latest build from ${GITHUB_SHA}." \
+              --latest
+          fi

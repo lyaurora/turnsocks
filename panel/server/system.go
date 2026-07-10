@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -19,25 +20,43 @@ func readServiceInfo() serviceInfo {
 	return serviceInfo{Active: active, PID: pid}
 }
 
-func restartTurnsocks() error {
+func restartTurnsocks(listen string) error {
 	if err := runCommand(10*time.Second, "sudo", "-n", "systemctl", "restart", serviceName); err != nil {
 		return fmt.Errorf("重启 %s 失败：%w", serviceName, err)
 	}
-	return waitTurnsocksReady(8 * time.Second)
+	return waitTurnsocksReady(8*time.Second, listen)
 }
 
-func waitTurnsocksReady(timeout time.Duration) error {
+func waitTurnsocksReady(timeout time.Duration, listen string) error {
 	deadline := time.Now().Add(timeout)
+	checkAddr := localCheckAddr(listen)
 	for time.Now().Before(deadline) {
 		if strings.TrimSpace(commandOutput(2*time.Second, "systemctl", "is-active", serviceName)) == "active" {
-			return nil
+			conn, err := net.DialTimeout("tcp", checkAddr, 500*time.Millisecond)
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
 		}
-		if strings.TrimSpace(commandOutput(2*time.Second, "pgrep", "-x", serviceName)) != "" {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("%s 未恢复运行", serviceName)
+	return fmt.Errorf("%s 未在 %s 恢复监听", serviceName, checkAddr)
+}
+
+func localCheckAddr(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return listen
+	}
+	ip := net.ParseIP(host)
+	if host == "" || ip != nil && ip.IsUnspecified() {
+		if ip != nil && ip.To4() == nil {
+			host = "::1"
+		} else {
+			host = "127.0.0.1"
+		}
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func runCommand(timeout time.Duration, name string, args ...string) error {

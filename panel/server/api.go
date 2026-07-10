@@ -109,7 +109,7 @@ func (a *app) handleSelectServer(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, fmt.Errorf("已保存，但状态写入失败：%w", err))
 		return
 	}
-	if err := restartTurnsocks(); err != nil {
+	if err := restartTurnsocks(cfg.Listen); err != nil {
 		writeAPIError(w, fmt.Errorf("已保存，但重启失败：%w", err))
 		return
 	}
@@ -161,7 +161,14 @@ func (a *app) handleRestart(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w)
 		return
 	}
-	if err := restartTurnsocks(); err != nil {
+	a.configMu.Lock()
+	cfg, err := readProxyConfig(a.configPath)
+	a.configMu.Unlock()
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if err := restartTurnsocks(cfg.Listen); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -215,7 +222,7 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if restartNeeded {
-		if err := restartTurnsocks(); err != nil {
+		if err := restartTurnsocks(cfg.Listen); err != nil {
 			writeAPIError(w, fmt.Errorf("已保存，但重启失败：%w", err))
 			return
 		}
