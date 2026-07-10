@@ -146,7 +146,7 @@ make check
 make release
 ```
 
-构建依赖于 Go 1.25.12、Node.js 和 npm。`make check` / `make release` 将自动检查并构建 `panel/ui` 的 React 前端，再嵌入二进制文件。普通用户建议直接使用安装脚本部署 Release 版本，无需本地构建。
+构建环境以 `go.mod` 和 `panel/ui/package.json` 为准。`make check` / `make release` 将自动检查并构建 `panel/ui` 的 React 前端，再嵌入二进制文件。普通用户建议直接使用安装脚本部署 Release 版本，无需本地构建。
 
 从源码编译并安装到本地运行目录：
 
