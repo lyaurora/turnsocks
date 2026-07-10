@@ -24,6 +24,7 @@ type Config struct {
 	LogVerbose   bool
 	TCPAllocs    *tcpAllocationPool
 	UDPPrewarm   *udpPrewarmPool
+	UDPSessions  *udpSessionRegistry
 }
 
 func getenv(k, def string) string {

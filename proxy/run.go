@@ -70,6 +70,7 @@ func Run() {
 	cfg.TCPAllocs = newTCPAllocationPool()
 	cfg.TCPAllocs.setAllowed(cfg.TurnServers)
 	cfg.UDPPrewarm = newUDPPrewarmPool()
+	cfg.UDPSessions = newUDPSessionRegistry()
 	cfg.TurnPool.markSuccess(initialTurnServer(cfg.TurnServers, readRuntimeState(cfg.StatePath)))
 	dohURL, err := url.ParseRequestURI(cfg.DoH)
 	if err != nil {
@@ -98,6 +99,7 @@ func Run() {
 	<-signals
 	proxy.stop()
 	cfg.UDPPrewarm.close()
+	cfg.UDPSessions.closeAll()
 }
 
 func startProfiling(cpuPath string, memPath string) func() {

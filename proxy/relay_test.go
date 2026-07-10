@@ -99,6 +99,38 @@ func TestUDPSessionCloseReleasesAllocation(t *testing.T) {
 	}
 }
 
+func TestUDPSessionRegistryCloseAllReleasesActiveAllocations(t *testing.T) {
+	registry := newUDPSessionRegistry()
+	client, server := net.Pipe()
+	defer client.Close()
+	turnConn := &recordingSTUNConn{}
+	s := &udpSession{
+		clientTCP: server,
+		turnConn:  turnConn,
+		closed:    make(chan struct{}),
+	}
+	if !registry.add(s) {
+		t.Fatal("active UDP session was not registered")
+	}
+
+	registry.closeAll()
+
+	if !turnConn.closed.Load() {
+		t.Fatal("TURN connection was not closed")
+	}
+	if got := turnConn.writeCount.Load(); got != 1 {
+		t.Fatalf("release writes = %d, want 1", got)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	var buf [1]byte
+	if _, err := client.Read(buf[:]); !errors.Is(err, io.EOF) {
+		t.Fatalf("control connection read error = %v, want EOF", err)
+	}
+	if registry.add(&udpSession{}) {
+		t.Fatal("closed registry accepted a new session")
+	}
+}
+
 func TestUDPRequestRetransmitsAfterDroppedResponse(t *testing.T) {
 	turnConn := &recordingSTUNConn{}
 	s := &udpSession{

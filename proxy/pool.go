@@ -25,6 +25,12 @@ type udpPrewarmPool struct {
 	closed   bool
 }
 
+type udpSessionRegistry struct {
+	mu       sync.Mutex
+	sessions map[*udpSession]struct{}
+	closed   bool
+}
+
 func newTCPAllocationPool() *tcpAllocationPool {
 	return &tcpAllocationPool{
 		allocs:  make(map[string][]*tcpAllocation),
@@ -34,6 +40,50 @@ func newTCPAllocationPool() *tcpAllocationPool {
 
 func newUDPPrewarmPool() *udpPrewarmPool {
 	return &udpPrewarmPool{}
+}
+
+func newUDPSessionRegistry() *udpSessionRegistry {
+	return &udpSessionRegistry{sessions: make(map[*udpSession]struct{})}
+}
+
+func (r *udpSessionRegistry) add(s *udpSession) bool {
+	if r == nil || s == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false
+	}
+	r.sessions[s] = struct{}{}
+	return true
+}
+
+func (r *udpSessionRegistry) remove(s *udpSession) {
+	if r == nil || s == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.sessions, s)
+	r.mu.Unlock()
+}
+
+func (r *udpSessionRegistry) closeAll() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.closed = true
+	sessions := make([]*udpSession, 0, len(r.sessions))
+	for s := range r.sessions {
+		sessions = append(sessions, s)
+	}
+	clear(r.sessions)
+	r.mu.Unlock()
+
+	for _, s := range sessions {
+		s.fail()
+	}
 }
 
 func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, error) {

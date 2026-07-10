@@ -58,6 +58,14 @@ func handleUDPAssociate(clientTCP net.Conn, cfg Config) {
 		localUDP.Close()
 		return
 	}
+	if cfg.UDPSessions != nil {
+		if !cfg.UDPSessions.add(s) {
+			s.close()
+			_ = writeSocksReply(clientTCP, 0x01, "0.0.0.0", 0)
+			return
+		}
+		defer cfg.UDPSessions.remove(s)
+	}
 
 	if err := writeSocksReply(clientTCP, 0x00, "127.0.0.1", bindPort); err != nil {
 		s.close()
