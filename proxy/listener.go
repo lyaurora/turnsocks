@@ -50,3 +50,14 @@ func (p *proxyController) acceptLoop(ln net.Listener) {
 		go handleSocksConn(c, p.cfg)
 	}
 }
+
+func (p *proxyController) stop() {
+	p.mu.Lock()
+	ln := p.ln
+	p.ln = nil
+	p.running = false
+	p.mu.Unlock()
+	if ln != nil {
+		_ = ln.Close()
+	}
+}

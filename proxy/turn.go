@@ -33,16 +33,19 @@ const (
 	allocationLifetime            = 10 * time.Minute
 	allocationRefreshEvery        = 5 * time.Minute
 	turnUDPAttemptTimeout         = time.Second
+	turnUDPRetryRTO               = 300 * time.Millisecond
 	turnTCPDialTimeout            = 3 * time.Second
 	tcpKeepAlivePeriod            = 30 * time.Second
 	udpSocketBufferSize           = 512 << 10
 	proxyCopyBufferSize           = 32 << 10
 	refreshRetryDelay             = time.Second
+	turnReleaseTimeout            = 500 * time.Millisecond
 	turnConfigPollInterval        = 2 * time.Second
 )
 
 var sendIndicationMessageType = stun.MessageType{Method: MethodSend, Class: stun.ClassIndication}.Value()
 var dataIndicationMessageType = stun.MessageType{Method: MethodData, Class: stun.ClassIndication}.Value()
+var errTURNRequestTimeout = errors.New("TURN request timeout")
 
 var proxyCopyBufferPool = sync.Pool{
 	New: func() any {

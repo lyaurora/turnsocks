@@ -361,9 +361,24 @@ func (s *udpSession) close() {
 			_ = s.localUDP.Close()
 		}
 		if s.turnConn != nil {
+			s.releaseAllocation()
 			_ = s.turnConn.close()
 		}
 	})
+}
+
+func (s *udpSession) releaseAllocation() {
+	req := stun.New()
+	req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
+	req.TransactionID = stun.NewTransactionID()
+	addLifetime(req, 0)
+	if err := s.addAuthToRequest(req); err != nil {
+		return
+	}
+
+	s.writeMu.Lock()
+	_ = s.turnConn.writeMessage(req, shorterTimeout(s.cfg.Timeout, turnReleaseTimeout))
+	s.writeMu.Unlock()
 }
 
 func (s *udpSession) fail() {
@@ -400,23 +415,57 @@ func (s *udpSession) request(req *stun.Message, timeout time.Duration) (*stun.Me
 		s.pendingMu.Unlock()
 	}()
 
+	if err := s.writeRequest(req, timeout); err != nil {
+		return nil, err
+	}
+	return s.waitForResponse(req, ch, timeout)
+}
+
+func (s *udpSession) writeRequest(req *stun.Message, timeout time.Duration) error {
 	s.writeMu.Lock()
 	err := s.turnConn.writeMessage(req, timeout)
 	s.writeMu.Unlock()
-	if err != nil {
-		return nil, err
+	return err
+}
+
+func (s *udpSession) waitForResponse(req *stun.Message, ch <-chan *stun.Message, timeout time.Duration) (*stun.Message, error) {
+	deadline := time.Now().Add(timeout)
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+
+	var retryTimer *time.Timer
+	var retry <-chan time.Time
+	retryDelay := turnUDPRetryRTO
+	if s.turnNetwork == "udp" && retryDelay < timeout {
+		retryTimer = time.NewTimer(retryDelay)
+		retry = retryTimer.C
+		defer retryTimer.Stop()
 	}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case res := <-ch:
-		return res, nil
-	case <-timer.C:
-		return nil, errors.New("TURN request timeout")
-	case <-s.closed:
-		return nil, errors.New("session closed")
+	for {
+		select {
+		case res := <-ch:
+			return res, nil
+		case <-retry:
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil, errTURNRequestTimeout
+			}
+			if err := s.writeRequest(req, shorterTimeout(s.cfg.Timeout, remaining)); err != nil {
+				return nil, err
+			}
+			retryDelay *= 2
+			remaining = time.Until(deadline)
+			if retryDelay >= remaining {
+				retry = nil
+				continue
+			}
+			retryTimer.Reset(retryDelay)
+		case <-timeoutTimer.C:
+			return nil, errTURNRequestTimeout
+		case <-s.closed:
+			return nil, errors.New("session closed")
+		}
 	}
 }
 
@@ -444,10 +493,7 @@ func (s *udpSession) allocate(timeout time.Duration) error {
 	req.TransactionID = stun.NewTransactionID()
 	req.Add(AttrRequestedTransport, []byte{0x11, 0x00, 0x00, 0x00})
 
-	if err := s.turnConn.writeMessage(req, timeout); err != nil {
-		return err
-	}
-	res, err := s.turnConn.readMessage(timeout)
+	res, err := s.initialRequest(req, timeout)
 	if err != nil {
 		return err
 	}
@@ -483,10 +529,7 @@ func (s *udpSession) allocate(timeout time.Duration) error {
 			return err
 		}
 
-		if err := s.turnConn.writeMessage(req2, timeout); err != nil {
-			return err
-		}
-		res2, err := s.turnConn.readMessage(timeout)
+		res2, err := s.initialRequest(req2, timeout)
 		if err != nil {
 			return err
 		}
@@ -506,6 +549,37 @@ func (s *udpSession) allocate(timeout time.Duration) error {
 		return fmt.Errorf("UDP allocate auth error %d %s", c, r)
 	}
 	return nil
+}
+
+func (s *udpSession) initialRequest(req *stun.Message, timeout time.Duration) (*stun.Message, error) {
+	deadline := time.Now().Add(timeout)
+	retryDelay := turnUDPRetryRTO
+
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, errTURNRequestTimeout
+		}
+		if err := s.turnConn.writeMessage(req, remaining); err != nil {
+			return nil, err
+		}
+
+		wait := remaining
+		if s.turnNetwork == "udp" && retryDelay < wait {
+			wait = retryDelay
+		}
+		res, err := s.turnConn.readMessage(wait)
+		if err == nil {
+			if res.TransactionID == req.TransactionID {
+				return res, nil
+			}
+			continue
+		}
+		if s.turnNetwork != "udp" || !isTimeoutError(err) || time.Now().After(deadline) {
+			return nil, err
+		}
+		retryDelay *= 2
+	}
 }
 
 func (s *udpSession) refreshLoop() {
@@ -979,7 +1053,7 @@ func (s *udpSession) ensurePermission(ip net.IP) error {
 		s.permissionMu.Unlock()
 		return err
 	}
-	go s.finishPermission(key, txKey, ch)
+	go s.finishPermission(key, req, txKey, ch)
 
 	return nil
 }
@@ -1005,10 +1079,7 @@ func (s *udpSession) sendPermissionRequest(req *stun.Message, timeout time.Durat
 	s.pending[txKey] = ch
 	s.pendingMu.Unlock()
 
-	s.writeMu.Lock()
-	err := s.turnConn.writeMessage(req, timeout)
-	s.writeMu.Unlock()
-	if err != nil {
+	if err := s.writeRequest(req, timeout); err != nil {
 		s.pendingMu.Lock()
 		delete(s.pending, txKey)
 		s.pendingMu.Unlock()
@@ -1018,9 +1089,7 @@ func (s *udpSession) sendPermissionRequest(req *stun.Message, timeout time.Durat
 	return txKey, ch, nil
 }
 
-func (s *udpSession) finishPermission(key [4]byte, txKey string, ch chan *stun.Message) {
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
+func (s *udpSession) finishPermission(key [4]byte, req *stun.Message, txKey string, ch chan *stun.Message) {
 	defer func() {
 		s.pendingMu.Lock()
 		delete(s.pending, txKey)
@@ -1031,8 +1100,8 @@ func (s *udpSession) finishPermission(key [4]byte, txKey string, ch chan *stun.M
 		s.permissionMu.Unlock()
 	}()
 
-	select {
-	case res := <-ch:
+	res, err := s.waitForResponse(req, ch, 5*time.Second)
+	if err == nil {
 		if res.Type.Class != stun.ClassSuccessResponse {
 			code, reason := getErrorCode(res)
 			if code == staleNonceCode {
@@ -1052,12 +1121,12 @@ func (s *udpSession) finishPermission(key [4]byte, txKey string, ch chan *stun.M
 		s.permissionMu.Lock()
 		s.permissions[key] = time.Now().Add(240 * time.Second)
 		s.permissionMu.Unlock()
-	case <-timer.C:
+		return
+	}
+	if errors.Is(err, errTURNRequestTimeout) {
 		if s.cfg.LogVerbose {
 			log.Printf("CreatePermission timed out")
 		}
-	case <-s.closed:
-		return
 	}
 }
 
@@ -1084,11 +1153,8 @@ func (s *udpSession) retryPermission(key [4]byte) bool {
 		s.pendingMu.Unlock()
 	}()
 
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-
-	select {
-	case res := <-ch:
+	res, waitErr := s.waitForResponse(req, ch, 5*time.Second)
+	if waitErr == nil {
 		if res.Type.Class == stun.ClassSuccessResponse {
 			s.permissionMu.Lock()
 			s.permissions[key] = time.Now().Add(240 * time.Second)
@@ -1107,11 +1173,10 @@ func (s *udpSession) retryPermission(key [4]byte) bool {
 		if s.cfg.LogVerbose {
 			log.Printf("permission retry error %d %s", code, reason)
 		}
-	case <-timer.C:
+	} else if errors.Is(waitErr, errTURNRequestTimeout) {
 		if s.cfg.LogVerbose {
 			log.Printf("CreatePermission retry timed out")
 		}
-	case <-s.closed:
 	}
 	return false
 }

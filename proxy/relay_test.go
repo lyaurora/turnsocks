@@ -10,7 +10,54 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/pion/stun/v3"
 )
+
+type recordingSTUNConn struct {
+	writes     chan *stun.Message
+	closed     atomic.Bool
+	writeCount atomic.Int32
+	onWrite    func(*stun.Message, int)
+	readFunc   func(time.Duration) (*stun.Message, error)
+}
+
+func (c *recordingSTUNConn) readMessage(timeout time.Duration) (*stun.Message, error) {
+	if c.readFunc != nil {
+		return c.readFunc(timeout)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (c *recordingSTUNConn) readMessageOrData(time.Duration) (*stun.Message, turnUDPData, bool, error) {
+	return nil, turnUDPData{}, false, errors.New("not implemented")
+}
+
+func (c *recordingSTUNConn) writeMessage(m *stun.Message, _ time.Duration) error {
+	m.WriteHeader()
+	clone := stun.New()
+	clone.Raw = append([]byte(nil), m.Raw...)
+	if err := clone.Decode(); err != nil {
+		return err
+	}
+	count := int(c.writeCount.Add(1))
+	if c.writes != nil {
+		c.writes <- clone
+	}
+	if c.onWrite != nil {
+		c.onWrite(clone, count)
+	}
+	return nil
+}
+
+func (c *recordingSTUNConn) writeRaw([]byte, time.Duration) error {
+	return nil
+}
+
+func (c *recordingSTUNConn) close() error {
+	c.closed.Store(true)
+	return nil
+}
 
 func TestUDPSessionFailureClosesControlConnection(t *testing.T) {
 	client, server := net.Pipe()
@@ -23,6 +70,130 @@ func TestUDPSessionFailureClosesControlConnection(t *testing.T) {
 	var buf [1]byte
 	if _, err := client.Read(buf[:]); !errors.Is(err, io.EOF) {
 		t.Fatalf("control connection read error = %v, want EOF", err)
+	}
+}
+
+func TestUDPSessionCloseReleasesAllocation(t *testing.T) {
+	turnConn := &recordingSTUNConn{writes: make(chan *stun.Message, 1)}
+	s := &udpSession{turnConn: turnConn, closed: make(chan struct{})}
+
+	s.close()
+
+	select {
+	case msg := <-turnConn.writes:
+		if msg.Type.Method != MethodRefresh || msg.Type.Class != stun.ClassRequest {
+			t.Fatalf("release type = %v, want Refresh request", msg.Type)
+		}
+		lifetime, err := msg.Get(AttrLifetime)
+		if err != nil {
+			t.Fatalf("release missing lifetime: %v", err)
+		}
+		if got := binary.BigEndian.Uint32(lifetime); got != 0 {
+			t.Fatalf("release lifetime = %d, want 0", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("release request was not sent")
+	}
+	if !turnConn.closed.Load() {
+		t.Fatal("TURN connection was not closed")
+	}
+}
+
+func TestUDPRequestRetransmitsAfterDroppedResponse(t *testing.T) {
+	turnConn := &recordingSTUNConn{}
+	s := &udpSession{
+		cfg:         Config{Timeout: time.Second},
+		turnConn:    turnConn,
+		turnNetwork: "udp",
+		pending:     make(map[string]chan *stun.Message),
+		closed:      make(chan struct{}),
+	}
+	turnConn.onWrite = func(req *stun.Message, count int) {
+		if count != 2 {
+			return
+		}
+		res := stun.New()
+		res.Type = stun.MessageType{Method: req.Type.Method, Class: stun.ClassSuccessResponse}
+		res.TransactionID = req.TransactionID
+		key := s.txIDKey(req.TransactionID)
+		s.pendingMu.Lock()
+		ch := s.pending[key]
+		s.pendingMu.Unlock()
+		ch <- res
+	}
+
+	req := stun.New()
+	req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
+	req.TransactionID = stun.NewTransactionID()
+	if _, err := s.request(req, time.Second); err != nil {
+		t.Fatalf("request failed after retransmission: %v", err)
+	}
+	if got := turnConn.writeCount.Load(); got != 2 {
+		t.Fatalf("request writes = %d, want 2", got)
+	}
+}
+
+func TestUDPInitialRequestRetransmitsAfterTimeout(t *testing.T) {
+	turnConn := &recordingSTUNConn{}
+	req := stun.New()
+	req.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
+	req.TransactionID = stun.NewTransactionID()
+	var reads atomic.Int32
+	turnConn.readFunc = func(timeout time.Duration) (*stun.Message, error) {
+		if reads.Add(1) == 1 {
+			time.Sleep(timeout)
+			return nil, &net.DNSError{Err: "dropped response", IsTimeout: true}
+		}
+		res := stun.New()
+		res.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassSuccessResponse}
+		res.TransactionID = req.TransactionID
+		return res, nil
+	}
+	s := &udpSession{turnConn: turnConn, turnNetwork: "udp"}
+
+	if _, err := s.initialRequest(req, time.Second); err != nil {
+		t.Fatalf("initial request failed after retransmission: %v", err)
+	}
+	if got := turnConn.writeCount.Load(); got != 2 {
+		t.Fatalf("initial request writes = %d, want 2", got)
+	}
+}
+
+func TestUDPPrewarmTakeStopsExpiry(t *testing.T) {
+	turn := turnServerConfig{Addr: "turn.example:3478"}
+	s := &udpSession{closed: make(chan struct{})}
+	fired := make(chan struct{}, 1)
+	p := &udpPrewarmPool{
+		session: s,
+		turnKey: turn.String(),
+		network: "udp",
+		created: time.Now(),
+	}
+	p.expiry = time.AfterFunc(20*time.Millisecond, func() {
+		fired <- struct{}{}
+	})
+
+	got, _, ok := p.take(Config{}, turn, nil, nil)
+	if !ok || got != s {
+		t.Fatal("prewarmed session was not returned")
+	}
+	defer got.close()
+
+	select {
+	case <-fired:
+		t.Fatal("prewarm expiry fired after session was taken")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestUDPPrewarmCloseRejectsNewSession(t *testing.T) {
+	p := newUDPPrewarmPool()
+	p.close()
+	if err := p.add(Config{}, turnServerConfig{Addr: "turn.example:3478"}); err != nil {
+		t.Fatal(err)
+	}
+	if p.session != nil || !p.closed {
+		t.Fatal("closed prewarm pool accepted a new session")
 	}
 }
 

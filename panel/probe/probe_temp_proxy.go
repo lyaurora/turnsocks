@@ -60,6 +60,12 @@ func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (
 		"-state", statePath,
 		"-timeout", "8s",
 	)
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		return cmd.Process.Signal(os.Interrupt)
+	}
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {

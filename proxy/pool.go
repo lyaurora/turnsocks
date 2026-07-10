@@ -17,10 +17,12 @@ type tcpAllocationPool struct {
 type udpPrewarmPool struct {
 	mu       sync.Mutex
 	session  *udpSession
+	expiry   *time.Timer
 	turnKey  string
 	network  string
 	created  time.Time
 	creating bool
+	closed   bool
 }
 
 func newTCPAllocationPool() *tcpAllocationPool {
@@ -175,11 +177,12 @@ func (p *udpPrewarmPool) add(cfg Config, turn turnServerConfig) error {
 	key := turn.String()
 
 	p.mu.Lock()
-	if p.creating || (p.session != nil && !p.session.isClosed()) {
+	if p.closed || p.creating || (p.session != nil && !p.session.isClosed()) {
 		p.mu.Unlock()
 		return nil
 	}
 	p.session = nil
+	p.stopExpiryLocked()
 	p.creating = true
 	p.mu.Unlock()
 
@@ -193,7 +196,7 @@ func (p *udpPrewarmPool) add(cfg Config, turn turnServerConfig) error {
 
 	p.mu.Lock()
 	p.creating = false
-	if p.session != nil && !p.session.isClosed() {
+	if p.closed || (p.session != nil && !p.session.isClosed()) {
 		p.mu.Unlock()
 		s.close()
 		return nil
@@ -202,9 +205,11 @@ func (p *udpPrewarmPool) add(cfg Config, turn turnServerConfig) error {
 	p.turnKey = key
 	p.network = "udp"
 	p.created = time.Now()
+	p.stopExpiryLocked()
+	p.expiry = time.AfterFunc(allocationRefreshEvery, func() {
+		p.expireIdle(cfg, s)
+	})
 	p.mu.Unlock()
-
-	go p.expireIdle(cfg, s, allocationRefreshEvery)
 	return nil
 }
 
@@ -218,6 +223,7 @@ func (p *udpPrewarmPool) take(cfg Config, turn turnServerConfig, clientTCP net.C
 	s := p.session
 	if s == nil || p.turnKey != key || p.network != "udp" || time.Since(p.created) >= allocationRefreshEvery || s.isClosed() {
 		p.session = nil
+		p.stopExpiryLocked()
 		p.mu.Unlock()
 		if s != nil {
 			s.close()
@@ -226,6 +232,7 @@ func (p *udpPrewarmPool) take(cfg Config, turn turnServerConfig, clientTCP net.C
 		return nil, "", false
 	}
 	p.session = nil
+	p.stopExpiryLocked()
 	p.mu.Unlock()
 
 	s.clientTCP = clientTCP
@@ -235,20 +242,39 @@ func (p *udpPrewarmPool) take(cfg Config, turn turnServerConfig, clientTCP net.C
 	return s, turn.Addr + "/udp", true
 }
 
-func (p *udpPrewarmPool) expireIdle(cfg Config, s *udpSession, maxIdle time.Duration) {
-	timer := time.NewTimer(maxIdle)
-	defer timer.Stop()
-	<-timer.C
-
+func (p *udpPrewarmPool) expireIdle(cfg Config, s *udpSession) {
 	p.mu.Lock()
 	if p.session == s {
 		p.session = nil
+		p.expiry = nil
 		p.mu.Unlock()
 		s.close()
 		go prewarmUDPAllocation(cfg)
 		return
 	}
 	p.mu.Unlock()
+}
+
+func (p *udpPrewarmPool) stopExpiryLocked() {
+	if p.expiry != nil {
+		p.expiry.Stop()
+		p.expiry = nil
+	}
+}
+
+func (p *udpPrewarmPool) close() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	s := p.session
+	p.session = nil
+	p.closed = true
+	p.stopExpiryLocked()
+	p.mu.Unlock()
+	if s != nil {
+		s.close()
+	}
 }
 
 func (p *udpPrewarmPool) closeIfNotAllowed(servers []turnServerConfig) {
@@ -268,6 +294,7 @@ func (p *udpPrewarmPool) closeIfNotAllowed(servers []turnServerConfig) {
 		return
 	}
 	p.session = nil
+	p.stopExpiryLocked()
 	p.mu.Unlock()
 	s.close()
 }

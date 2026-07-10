@@ -43,15 +43,6 @@ func Run() {
 
 	stopProfile := startProfiling(cpuProfile, memProfile)
 	defer stopProfile()
-	if cpuProfile != "" || memProfile != "" {
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-		go func() {
-			<-signals
-			stopProfile()
-			os.Exit(0)
-		}()
-	}
 
 	if cfg.Timeout <= 0 {
 		log.Fatal("timeout must be greater than 0")
@@ -101,7 +92,12 @@ func Run() {
 	go watchTurnConfig(cfg)
 	go cleanupDNSCache(cfg.DNSTTL)
 
-	select {}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	<-signals
+	proxy.stop()
+	cfg.UDPPrewarm.close()
 }
 
 func startProfiling(cpuPath string, memPath string) func() {
