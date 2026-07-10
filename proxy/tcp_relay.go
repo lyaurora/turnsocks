@@ -332,13 +332,22 @@ func (a *tcpAllocation) bindDataConn(dataConn net.Conn, connID []byte) error {
 func getConnectionID(res *stun.Message) ([]byte, error) {
 	if res.Type.Class != stun.ClassSuccessResponse {
 		c, r := getErrorCode(res)
-		return nil, turnPeerError(fmt.Errorf("connect error %d %s", c, strings.TrimRight(r, "\x00")))
+		err := fmt.Errorf("connect error %d %s", c, strings.TrimRight(r, "\x00"))
+		if isConnectPeerError(c) {
+			return nil, turnPeerError(err)
+		}
+		return nil, err
 	}
 	connID, err := res.Get(AttrConnectionID)
 	if err != nil || len(connID) == 0 {
 		return nil, errors.New("missing CONNECTION-ID")
 	}
 	return connID, nil
+}
+
+func isConnectPeerError(code int) bool {
+	// These responses do not show that the TURN server itself is unhealthy.
+	return code == 403 || code == 446 || code == 447
 }
 
 func (a *tcpAllocation) isClosed() bool {

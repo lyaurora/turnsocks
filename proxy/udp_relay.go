@@ -515,6 +515,7 @@ func (s *udpSession) refreshLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			s.pruneExpiredPermissions(time.Now())
 			if err := s.refreshAllocation(); err != nil {
 				select {
 				case <-time.After(refreshRetryDelay):
@@ -535,6 +536,16 @@ func (s *udpSession) refreshLoop() {
 			return
 		}
 	}
+}
+
+func (s *udpSession) pruneExpiredPermissions(now time.Time) {
+	s.permissionMu.Lock()
+	for key, expires := range s.permissions {
+		if !now.Before(expires) {
+			delete(s.permissions, key)
+		}
+	}
+	s.permissionMu.Unlock()
 }
 
 func (s *udpSession) refreshAllocation() error {

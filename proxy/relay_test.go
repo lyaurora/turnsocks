@@ -84,3 +84,35 @@ func TestResolveDoHCachesDNSFailure(t *testing.T) {
 		t.Fatalf("DoH requests = %d, want 1", got)
 	}
 }
+
+func TestConnectErrorClassification(t *testing.T) {
+	for _, code := range []int{403, 446, 447} {
+		if !isConnectPeerError(code) {
+			t.Fatalf("CONNECT error %d should remain peer-specific", code)
+		}
+	}
+	for _, code := range []int{401, 437, 441, 500, 508} {
+		if isConnectPeerError(code) {
+			t.Fatalf("CONNECT error %d should allow TURN failover", code)
+		}
+	}
+}
+
+func TestPruneExpiredPermissions(t *testing.T) {
+	now := time.Now()
+	expired := [4]byte{192, 0, 2, 1}
+	active := [4]byte{192, 0, 2, 2}
+	s := &udpSession{permissions: map[[4]byte]time.Time{
+		expired: now.Add(-time.Second),
+		active:  now.Add(time.Minute),
+	}}
+
+	s.pruneExpiredPermissions(now)
+
+	if _, ok := s.permissions[expired]; ok {
+		t.Fatal("expired permission was not removed")
+	}
+	if _, ok := s.permissions[active]; !ok {
+		t.Fatal("active permission was removed")
+	}
+}
