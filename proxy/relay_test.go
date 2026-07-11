@@ -131,6 +131,87 @@ func TestUDPSessionRegistryCloseAllReleasesActiveAllocations(t *testing.T) {
 	}
 }
 
+func TestValidateSTUNResponse(t *testing.T) {
+	req := stun.New()
+	req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
+	req.TransactionID = stun.NewTransactionID()
+
+	res := stun.New()
+	res.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassSuccessResponse}
+	res.TransactionID = req.TransactionID
+	if err := validateSTUNResponse(req, res); err != nil {
+		t.Fatal(err)
+	}
+
+	res.TransactionID = stun.NewTransactionID()
+	if err := validateSTUNResponse(req, res); err == nil {
+		t.Fatal("mismatched transaction ID was accepted")
+	}
+	res.TransactionID = req.TransactionID
+	res.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassSuccessResponse}
+	if err := validateSTUNResponse(req, res); err == nil {
+		t.Fatal("mismatched method was accepted")
+	}
+}
+
+func TestValidateLongTermIntegrity(t *testing.T) {
+	const username = "user"
+	const password = "password"
+	realm := stun.Realm("example.org")
+	res := stun.New()
+	res.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassSuccessResponse}
+	res.TransactionID = stun.NewTransactionID()
+	if err := stun.NewLongTermIntegrity(username, realm.String(), password).AddTo(res); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateLongTermIntegrity(res, username, password, &realm); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateLongTermIntegrity(res, username, "wrong", &realm); err == nil {
+		t.Fatal("response with invalid integrity was accepted")
+	}
+}
+
+func TestDoSTUNIgnoresUnrelatedResponse(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		req, err := readSTUNMessage(server)
+		if err != nil {
+			done <- err
+			return
+		}
+		unrelated := stun.New()
+		unrelated.Type = stun.MessageType{Method: req.Type.Method, Class: stun.ClassSuccessResponse}
+		unrelated.TransactionID = stun.NewTransactionID()
+		if err := writeSTUNMessage(server, unrelated); err != nil {
+			done <- err
+			return
+		}
+		res := stun.New()
+		res.Type = stun.MessageType{Method: req.Type.Method, Class: stun.ClassSuccessResponse}
+		res.TransactionID = req.TransactionID
+		done <- writeSTUNMessage(server, res)
+	}()
+
+	req := stun.New()
+	req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
+	req.TransactionID = stun.NewTransactionID()
+	res, err := doSTUN(client, req, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TransactionID != req.TransactionID {
+		t.Fatal("doSTUN returned unrelated response")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUDPRequestRetransmitsAfterDroppedResponse(t *testing.T) {
 	turnConn := &recordingSTUNConn{}
 	s := &udpSession{

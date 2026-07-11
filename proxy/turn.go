@@ -189,7 +189,45 @@ func doSTUN(conn net.Conn, m *stun.Message, timeout time.Duration) (*stun.Messag
 	if err := writeSTUNMessage(conn, m); err != nil {
 		return nil, err
 	}
-	return readSTUNMessage(conn)
+	for {
+		res, err := readSTUNMessage(conn)
+		if err != nil {
+			return nil, err
+		}
+		if res.TransactionID != m.TransactionID || res.Type.Method != m.Type.Method {
+			continue
+		}
+		if err := validateSTUNResponse(m, res); err != nil {
+			return nil, err
+		}
+		return res, nil
+	}
+}
+
+func validateSTUNResponse(req *stun.Message, res *stun.Message) error {
+	if req == nil || res == nil {
+		return errors.New("nil STUN transaction message")
+	}
+	if res.TransactionID != req.TransactionID {
+		return errors.New("STUN response transaction ID mismatch")
+	}
+	if res.Type.Method != req.Type.Method {
+		return fmt.Errorf("STUN response method %v does not match request %v", res.Type.Method, req.Type.Method)
+	}
+	if res.Type.Class != stun.ClassSuccessResponse && res.Type.Class != stun.ClassErrorResponse {
+		return fmt.Errorf("unexpected STUN response class %v", res.Type.Class)
+	}
+	return nil
+}
+
+func validateLongTermIntegrity(res *stun.Message, username string, password string, realm *stun.Realm) error {
+	if realm == nil || realm.String() == "" {
+		return errors.New("cannot validate TURN response without realm")
+	}
+	if err := stun.NewLongTermIntegrity(username, realm.String(), password).Check(res); err != nil {
+		return fmt.Errorf("TURN response MESSAGE-INTEGRITY check failed: %w", err)
+	}
+	return nil
 }
 
 func getErrorCode(m *stun.Message) (int, string) {

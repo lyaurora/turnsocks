@@ -82,6 +82,9 @@ func allocateTCP(conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, 
 		if err != nil {
 			return realm, nonce, true, err
 		}
+		if err := validateLongTermIntegrity(res2, username, password, &realm); err != nil {
+			return realm, nonce, true, err
+		}
 		if res2.Type.Class == stun.ClassSuccessResponse {
 			return realm, nonce, true, nil
 		}
@@ -98,7 +101,7 @@ func allocateTCP(conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, 
 		return realm, nonce, true, fmt.Errorf("allocate auth error %d %s", c, r)
 	}
 
-	return realm, nonce, true, nil
+	return realm, nonce, true, errors.New("allocate authentication retry exhausted")
 }
 
 func dialTurnTCP(cfg Config, targetIP net.IP, targetPort int) (net.Conn, func(), string, error) {
@@ -260,6 +263,11 @@ func (a *tcpAllocation) connectPeerLocked(targetIP net.IP, targetPort int) ([]by
 			}
 			return nil, err
 		}
+		if a.needAuth {
+			if err := validateLongTermIntegrity(connectRes, a.username, a.password, &a.realm); err != nil {
+				return nil, err
+			}
+		}
 
 		stale, err := a.updateAuthFromErrorLocked(connectRes)
 		if stale {
@@ -306,6 +314,12 @@ func (a *tcpAllocation) bindDataConn(dataConn net.Conn, connID []byte) error {
 			return err
 		}
 		a.ctrlMu.Lock()
+		if a.needAuth {
+			if err := validateLongTermIntegrity(bindRes, a.username, a.password, &a.realm); err != nil {
+				a.ctrlMu.Unlock()
+				return err
+			}
+		}
 		stale, updateErr := a.updateAuthFromErrorLocked(bindRes)
 		a.ctrlMu.Unlock()
 		if stale {
@@ -489,6 +503,11 @@ func refreshAllocation(conn net.Conn, cfg Config, username string, password stri
 		res, err := doSTUN(conn, req, cfg.Timeout)
 		if err != nil {
 			return err
+		}
+		if needAuth {
+			if err := validateLongTermIntegrity(res, username, password, realm); err != nil {
+				return err
+			}
 		}
 		if res.Type.Class == stun.ClassSuccessResponse {
 			return nil

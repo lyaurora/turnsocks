@@ -426,7 +426,26 @@ func (s *udpSession) request(req *stun.Message, timeout time.Duration) (*stun.Me
 	if err := s.writeRequest(req, timeout); err != nil {
 		return nil, err
 	}
-	return s.waitForResponse(req, ch, timeout)
+	res, err := s.waitForResponse(req, ch, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSTUNResponse(req, res); err != nil {
+		return nil, err
+	}
+	if err := s.validateResponseIntegrity(res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func (s *udpSession) validateResponseIntegrity(res *stun.Message) error {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if !s.needAuth {
+		return nil
+	}
+	return validateLongTermIntegrity(res, s.username, s.password, &s.realm)
 }
 
 func (s *udpSession) writeRequest(req *stun.Message, timeout time.Duration) error {
@@ -541,6 +560,9 @@ func (s *udpSession) allocate(timeout time.Duration) error {
 		if err != nil {
 			return err
 		}
+		if err := validateLongTermIntegrity(res2, s.username, s.password, &s.realm); err != nil {
+			return err
+		}
 		if res2.Type.Class == stun.ClassSuccessResponse {
 			return nil
 		}
@@ -556,7 +578,7 @@ func (s *udpSession) allocate(timeout time.Duration) error {
 		c, r := getErrorCode(res2)
 		return fmt.Errorf("UDP allocate auth error %d %s", c, r)
 	}
-	return nil
+	return errors.New("UDP allocate authentication retry exhausted")
 }
 
 func (s *udpSession) initialRequest(req *stun.Message, timeout time.Duration) (*stun.Message, error) {
@@ -579,6 +601,9 @@ func (s *udpSession) initialRequest(req *stun.Message, timeout time.Duration) (*
 		res, err := s.turnConn.readMessage(wait)
 		if err == nil {
 			if res.TransactionID == req.TransactionID {
+				if err := validateSTUNResponse(req, res); err != nil {
+					return nil, err
+				}
 				return res, nil
 			}
 			continue
@@ -1110,6 +1135,13 @@ func (s *udpSession) finishPermission(key [4]byte, req *stun.Message, txKey stri
 
 	res, err := s.waitForResponse(req, ch, 5*time.Second)
 	if err == nil {
+		if validateErr := validateSTUNResponse(req, res); validateErr != nil {
+			err = validateErr
+		} else if validateErr := s.validateResponseIntegrity(res); validateErr != nil {
+			err = validateErr
+		}
+	}
+	if err == nil {
 		if res.Type.Class != stun.ClassSuccessResponse {
 			code, reason := getErrorCode(res)
 			if code == staleNonceCode {
@@ -1162,6 +1194,13 @@ func (s *udpSession) retryPermission(key [4]byte) bool {
 	}()
 
 	res, waitErr := s.waitForResponse(req, ch, 5*time.Second)
+	if waitErr == nil {
+		if err := validateSTUNResponse(req, res); err != nil {
+			waitErr = err
+		} else if err := s.validateResponseIntegrity(res); err != nil {
+			waitErr = err
+		}
+	}
 	if waitErr == nil {
 		if res.Type.Class == stun.ClassSuccessResponse {
 			s.permissionMu.Lock()

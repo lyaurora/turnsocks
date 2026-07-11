@@ -40,10 +40,14 @@ func watchTurnConfig(cfg Config) {
 		return
 	}
 
-	var lastMod time.Time
-	if info, err := os.Stat(cfg.ConfigPath); err == nil {
-		lastMod = info.ModTime()
+	info, err := os.Stat(cfg.ConfigPath)
+	if err != nil {
+		if cfg.LogVerbose && !os.IsNotExist(err) {
+			log.Printf("TURN config watch stat failed: %v", err)
+		}
+		return
 	}
+	lastMod := info.ModTime()
 
 	ticker := time.NewTicker(turnConfigPollInterval)
 	defer ticker.Stop()
