@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -26,11 +27,20 @@ func writeRuntimeState(path string, currentAddr string) error {
 	}
 	raw = append(raw, '\n')
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func readRuntimeState(path string) runtimeState {

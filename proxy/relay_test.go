@@ -517,6 +517,47 @@ func TestResolveDoHCachesDNSFailure(t *testing.T) {
 	}
 }
 
+func TestResolveDoHDoesNotCacheZeroTTL(t *testing.T) {
+	const host = "zero-ttl.example"
+	dnsCache.Delete(host)
+	defer dnsCache.Delete(host)
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		query, err := io.ReadAll(r.Body)
+		if err != nil || len(query) < 12 {
+			http.Error(w, "bad query", http.StatusBadRequest)
+			return
+		}
+		response := append([]byte(nil), query...)
+		response[2] = 0x81
+		response[3] = 0x80
+		binary.BigEndian.PutUint16(response[6:8], 1)
+		response = append(response,
+			0xc0, 0x0c,
+			0x00, 0x01,
+			0x00, 0x01,
+			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x04,
+			192, 0, 2, 1,
+		)
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(response)
+	}))
+	defer server.Close()
+
+	cfg := Config{DoH: server.URL, DoHClient: server.Client(), DNSTTL: time.Minute, Timeout: time.Second}
+	for i := 0; i < 2; i++ {
+		if _, err := resolveDoH(host, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("DoH requests = %d, want 2 for TTL 0", got)
+	}
+}
+
 func TestConnectErrorClassification(t *testing.T) {
 	for _, code := range []int{403, 446, 447} {
 		if !isConnectPeerError(code) {

@@ -124,7 +124,9 @@ func queryDoH(queryHost string, cfg Config) (net.IP, error) {
 		dnsCache.Store(queryHost, dnsEntry{Err: err, ExpireAt: time.Now().Add(dnsNegativeTTL)})
 		return nil, err
 	}
-	dnsCache.Store(queryHost, dnsEntry{IP: ip, ExpireAt: time.Now().Add(ttl)})
+	if ttl > 0 {
+		dnsCache.Store(queryHost, dnsEntry{IP: ip, ExpireAt: time.Now().Add(ttl)})
+	}
 	return ip, nil
 }
 
@@ -251,15 +253,12 @@ func parseDNSAResponse(msg []byte, wantID uint16, host string, maxTTL time.Durat
 		}
 		if answerType == 1 && answerClass == 1 && rdLen == net.IPv4len {
 			ip := net.IPv4(msg[offset], msg[offset+1], msg[offset+2], msg[offset+3])
-			ttl := maxTTL
-			if answerTTL > 0 {
-				answerDuration := time.Duration(answerTTL) * time.Second
-				if ttl <= 0 || answerDuration < ttl {
-					ttl = answerDuration
-				}
+			if answerTTL == 0 {
+				return ip, 0, nil
 			}
-			if ttl <= 0 {
-				ttl = time.Minute
+			ttl := time.Duration(answerTTL) * time.Second
+			if maxTTL > 0 && maxTTL < ttl {
+				ttl = maxTTL
 			}
 			return ip, ttl, nil
 		}
