@@ -29,7 +29,6 @@ type Result struct {
 	SOCKSUDP      Check   `json:"socksUdp"`
 	SingleThread  Speed   `json:"singleThread"`
 	MultiThread   Speed   `json:"multiThread"`
-	Score         int     `json:"score"`
 	DurationMS    float64 `json:"durationMs"`
 	DownloadBytes int64   `json:"downloadBytes"`
 	TestedAt      string  `json:"testedAt,omitempty"`
@@ -75,7 +74,6 @@ func (r Runner) Test(ctx context.Context, server Server, doh string) Result {
 		resp.SOCKSUDP = Check{Message: msg}
 		resp.SingleThread = Speed{Threads: 1, Message: msg}
 		resp.MultiThread = Speed{Threads: testMultiThreads, Message: msg}
-		resp.Score = scoreServerTest(resp)
 		resp.DurationMS = round1(float64(time.Since(start).Microseconds()) / 1000)
 		resp.Message = msg
 		return resp
@@ -86,7 +84,6 @@ func (r Runner) Test(ctx context.Context, server Server, doh string) Result {
 	resp.SingleThread = measureDownloadSpeed(ctx, proxyAddr, 1, testSingleBytes)
 	resp.MultiThread = measureDownloadSpeed(ctx, proxyAddr, testMultiThreads, testMultiBytes)
 	resp.OK = resp.SingleThread.OK || resp.MultiThread.OK
-	resp.Score = scoreServerTest(resp)
 	resp.DurationMS = round1(float64(time.Since(start).Microseconds()) / 1000)
 	resp.Message = serverTestMessage(resp)
 	return resp

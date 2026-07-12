@@ -33,44 +33,17 @@ func metricFromSamples(samples []float64, attempts int, failMessage string, last
 	return m
 }
 
-func scoreServerTest(resp Result) int {
-	score := 0
-	if resp.TCPConnect.OK {
-		score += clampInt(20-int(resp.TCPConnect.AvgMS/5), 0, 20)
-	}
-	if resp.SOCKSUDP.OK {
-		score += 15
-	}
-	if resp.SingleThread.OK {
-		score += clampInt(int(resp.SingleThread.Mbps/3), 0, 40)
-	}
-	if resp.MultiThread.OK {
-		score += clampInt(int(resp.MultiThread.Mbps/8), 0, 25)
-	}
-	return clampInt(score, 0, 100)
-}
-
 func serverTestMessage(resp Result) string {
 	if resp.SingleThread.OK || resp.MultiThread.OK {
 		if !resp.SOCKSUDP.OK || !resp.SingleThread.OK || !resp.MultiThread.OK {
-			return fmt.Sprintf("测试完成，部分项目失败：单线程 %.1f Mbps，多线程 %.1f Mbps，综合评分 %d", resp.SingleThread.Mbps, resp.MultiThread.Mbps, resp.Score)
+			return fmt.Sprintf("测试完成，部分项目失败：单线程 %.1f Mbps，多线程 %.1f Mbps", resp.SingleThread.Mbps, resp.MultiThread.Mbps)
 		}
-		return fmt.Sprintf("测试完成：单线程 %.1f Mbps，多线程 %.1f Mbps，综合评分 %d", resp.SingleThread.Mbps, resp.MultiThread.Mbps, resp.Score)
+		return fmt.Sprintf("测试完成：单线程 %.1f Mbps，多线程 %.1f Mbps", resp.SingleThread.Mbps, resp.MultiThread.Mbps)
 	}
 	if resp.TCPConnect.OK {
-		return fmt.Sprintf("测试失败：未测出可用带宽，TCP 延迟 %.1f ms，综合评分 %d", resp.TCPConnect.AvgMS, resp.Score)
+		return fmt.Sprintf("测试失败：未测出可用带宽，TCP 延迟 %.1f ms", resp.TCPConnect.AvgMS)
 	}
 	return "测试失败"
-}
-
-func clampInt(v, min, max int) int {
-	if v < min {
-		return min
-	}
-	if v > max {
-		return max
-	}
-	return v
 }
 
 func elapsedMS(start time.Time) float64 {

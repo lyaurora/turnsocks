@@ -6,7 +6,7 @@ export function Chip({ children, active, warn, danger }: { children: ReactNode; 
   if (warn) colorClass = "border-[hsl(var(--warn))]/30 bg-[hsl(var(--warn))]/10 text-[hsl(var(--warn))]";
   if (danger) colorClass = "border-[hsl(var(--danger))]/30 bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]";
   return (
-    <span className={`inline-flex min-h-[30px] items-center rounded-full border px-[11px] font-mono text-[11px] uppercase tracking-[0.12em] whitespace-nowrap ${colorClass}`}>
+    <span className={`inline-flex min-h-[30px] items-center justify-center rounded-full border px-[11px] pt-[2px] font-mono text-[11px] uppercase leading-none tracking-[0.12em] whitespace-nowrap ${colorClass}`}>
       {children}
     </span>
   );

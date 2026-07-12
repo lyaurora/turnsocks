@@ -77,30 +77,45 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
                       {!isCurrent && (
                         <button disabled={busy} onClick={() => onSelectServer(server.raw)} className={`${primaryButtonClass} h-[34px] whitespace-nowrap px-[13px]`} type="button">切换</button>
                       )}
-                      <button disabled={busy} onClick={() => onDeleteServer(server.raw)} className="h-[34px] cursor-pointer whitespace-nowrap rounded-full border border-transparent px-[13px] text-[13px] font-medium text-[hsl(var(--danger))] transition-colors hover:bg-[hsl(var(--danger))]/10 disabled:cursor-wait disabled:opacity-55" type="button">删除</button>
+                      <button disabled={busy} onClick={() => onDeleteServer(server.raw)} className="inline-flex h-[34px] cursor-pointer items-center justify-center whitespace-nowrap rounded-full border border-[hsl(var(--danger))]/25 px-[13px] text-[13px] font-medium leading-none text-[hsl(var(--danger))] transition-colors hover:bg-[hsl(var(--danger))]/10 disabled:cursor-wait disabled:opacity-55" type="button">删除</button>
                     </div>
                   </div>
 
                   {test && !isTesting && (
-                    <div className={`overflow-x-auto border-t border-[hsl(var(--border))]/60 px-4 py-3 font-mono text-[12px] leading-relaxed ${test.ok ? "bg-[hsl(var(--muted))]/30" : "bg-[hsl(var(--danger))]/10"}`}>
+                    <div className={`border-t border-[hsl(var(--border))]/60 px-4 py-3 ${test.ok ? "bg-[hsl(var(--muted))]/30" : "bg-[hsl(var(--danger))]/10"}`}>
                       {test.ok ? (
-                        <div className="flex flex-col gap-x-6 gap-y-2 text-[hsl(var(--foreground))] sm:flex-row sm:flex-wrap sm:items-center">
-                          <span><span className="text-[hsl(var(--muted-foreground))]">综合评分：</span><b className="text-[hsl(var(--ok))]">{test.score || 0}</b></span>
-                          <span className="hidden text-[hsl(var(--border))] sm:block">|</span>
-                          <span><span className="text-[hsl(var(--muted-foreground))]">测试时间：</span>{formatTestTime(test.testedAt)}</span>
-                          <span className="hidden text-[hsl(var(--border))] sm:block">|</span>
-                          <span><span className="text-[hsl(var(--muted-foreground))]">TCP 延迟：</span>{test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"}</span>
-                          <span className="hidden text-[hsl(var(--border))] sm:block">|</span>
-                          <span><span className="text-[hsl(var(--muted-foreground))]">UDP 转发：</span><span className={test.socksUdp?.ok ? "text-[hsl(var(--ok))]" : "text-[hsl(var(--danger))]"}>{test.socksUdp?.ok ? "可用" : "失败"}</span></span>
-                          <span className="hidden text-[hsl(var(--border))] sm:block">|</span>
-                          <span><span className="text-[hsl(var(--muted-foreground))]">单线程：</span>{test.singleThread?.ok ? mbps(test.singleThread.mbps) : "失败"}</span>
-                          <span className="hidden text-[hsl(var(--border))] sm:block">|</span>
-                          <span><span className="text-[hsl(var(--muted-foreground))]">多线程：</span>{test.multiThread?.ok ? mbps(test.multiThread.mbps) : "失败"}</span>
+                        <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 xl:grid-cols-5">
+                          <div className="min-w-0">
+                            <div className="mb-1 text-[11px] text-[hsl(var(--muted-foreground))]">TCP 延迟</div>
+                            <div className="font-mono text-[13px] text-[hsl(var(--foreground))]">{test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"}</div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="mb-1 text-[11px] text-[hsl(var(--muted-foreground))]">UDP 转发</div>
+                            <div className={`font-mono text-[13px] ${test.socksUdp?.ok ? "text-[hsl(var(--ok))]" : "text-[hsl(var(--danger))]"}`}>{test.socksUdp?.ok ? "可用" : "失败"}</div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="mb-1 text-[11px] text-[hsl(var(--muted-foreground))]">单线程</div>
+                            <div className="font-mono text-[13px] text-[hsl(var(--foreground))]">{test.singleThread?.ok ? mbps(test.singleThread.mbps) : "失败"}</div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="mb-1 text-[11px] text-[hsl(var(--muted-foreground))]">多线程</div>
+                            <div className="font-mono text-[13px] text-[hsl(var(--foreground))]">{test.multiThread?.ok ? mbps(test.multiThread.mbps) : "失败"}</div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="mb-1 text-[11px] text-[hsl(var(--muted-foreground))]">测试时间</div>
+                            <div className="whitespace-nowrap font-mono text-[12px] text-[hsl(var(--foreground))]">{formatTestTime(test.testedAt)}</div>
+                          </div>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2 text-[hsl(var(--danger))]">
-                          <b>{test.message || "测试失败"}</b>
-                          <span className="ml-auto text-[11px] text-[hsl(var(--muted-foreground))]">{formatTestTime(test.testedAt)}</span>
+                        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                          <div className="min-w-0">
+                            <div className="mb-1 text-[11px] text-[hsl(var(--muted-foreground))]">测试结果</div>
+                            <div className="text-[13px] font-medium text-[hsl(var(--danger))]">{test.message || "测试失败"}</div>
+                          </div>
+                          <div>
+                            <div className="mb-1 text-[11px] text-[hsl(var(--muted-foreground))]">测试时间</div>
+                            <div className="whitespace-nowrap font-mono text-[12px] text-[hsl(var(--foreground))]">{formatTestTime(test.testedAt)}</div>
+                          </div>
                         </div>
                       )}
                     </div>

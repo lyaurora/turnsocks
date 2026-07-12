@@ -37,7 +37,6 @@ export type ServerTest = {
   socksUdp?: TestCheck;
   singleThread?: SpeedMetric;
   multiThread?: SpeedMetric;
-  score?: number;
   durationMs?: number;
   downloadBytes?: number;
   testedAt?: string;

@@ -216,7 +216,7 @@ function App() {
         <header className="mb-6 flex flex-col justify-between gap-4 md:mb-8 md:flex-row md:items-center">
           <h1 className="text-[32px] font-bold leading-none tracking-tight text-[hsl(var(--foreground))] md:text-[42px]">turnsocks</h1>
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-full border px-[11px] font-mono text-[11px] uppercase tracking-[0.12em] ${state.service.active ? "border-[hsl(var(--warn))]/30 bg-[hsl(var(--warn))]/10 text-[hsl(var(--warn))]" : "border-[hsl(var(--danger))]/30 bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]"}`}>
+            <span className={`inline-flex min-h-[30px] items-center justify-center gap-1.5 rounded-full border px-[11px] pt-[2px] font-mono text-[11px] uppercase leading-none tracking-[0.12em] ${state.service.active ? "border-[hsl(var(--warn))]/30 bg-[hsl(var(--warn))]/10 text-[hsl(var(--warn))]" : "border-[hsl(var(--danger))]/30 bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]"}`}>
               <IconDot />
               {state.service.active ? "服务运行中" : "服务已停止"}
             </span>
@@ -226,7 +226,7 @@ function App() {
             </form>
             <div className="flex rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/80 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] dark:shadow-none">
               {(["light", "system", "dark"] as ThemeMode[]).map((mode) => (
-                <button key={mode} onClick={(event) => changeTheme(mode, event.currentTarget)} className={`cursor-pointer rounded-full px-[9px] py-1 font-mono text-[11px] transition-all ${theme === mode ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-[0_1px_3px_rgba(0,0,0,0.08)]" : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`} type="button">
+                <button key={mode} onClick={(event) => changeTheme(mode, event.currentTarget)} className={`inline-flex min-h-[24px] cursor-pointer items-center justify-center rounded-full px-[9px] pt-[2px] font-mono text-[11px] leading-none transition-all ${theme === mode ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-[0_1px_3px_rgba(0,0,0,0.08)]" : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`} type="button">
                   {mode === "light" ? "浅色" : mode === "system" ? "系统" : "深色"}
                 </button>
               ))}
