@@ -1,7 +1,6 @@
 # Local secrets and machine-specific config
 config.env
 *.env
-!config.example.env
 
 # Logs and runtime files
 *.log
