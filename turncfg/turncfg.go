@@ -30,6 +30,9 @@ func ParseServer(raw string) (Server, error) {
 		if !ok || user == "" {
 			return Server{}, errors.New("鉴权格式应为 user:pass@host:port")
 		}
+		if strings.ContainsAny(cred, ",\r\n") {
+			return Server{}, errors.New("TURN 用户名和密码不能包含逗号或换行")
+		}
 		server.Username = user
 		server.Password = pass
 		server.HasAuth = true

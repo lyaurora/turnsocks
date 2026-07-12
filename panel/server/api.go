@@ -83,32 +83,36 @@ func (a *app) handleSelectServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.configMu.Lock()
-	defer a.configMu.Unlock()
-
 	cfg, err := readProxyConfig(a.configPath)
 	if err != nil {
+		a.configMu.Unlock()
 		writeAPIError(w, err)
 		return
 	}
 	servers, ok := moveServerFirst(cfg.Servers, req.Server)
 	if !ok {
+		a.configMu.Unlock()
 		writeAPIError(w, errors.New("节点不存在"))
 		return
 	}
 	selected, err := parseServer(servers[0])
 	if err != nil {
+		a.configMu.Unlock()
 		writeAPIError(w, err)
 		return
 	}
 	cfg.Servers = servers
 	if err := writeProxyConfig(a.configPath, cfg); err != nil {
+		a.configMu.Unlock()
 		writeAPIError(w, err)
 		return
 	}
 	if err := writeRuntimeState(a.statePath, selected.Addr); err != nil {
+		a.configMu.Unlock()
 		writeAPIError(w, fmt.Errorf("已保存，但状态写入失败：%w", err))
 		return
 	}
+	a.configMu.Unlock()
 	if err := restartTurnsocks(cfg.Listen); err != nil {
 		writeAPIError(w, fmt.Errorf("已保存，但重启失败：%w", err))
 		return
@@ -187,20 +191,27 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.configMu.Lock()
-	defer a.configMu.Unlock()
-
 	cfg, err := readProxyConfig(a.configPath)
+	a.configMu.Unlock()
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	restartNeeded := cfg.Listen != req.Listen || cfg.DoH != req.DoH
 	if cfg.DoH != req.DoH {
 		if err := checkDoHEndpoint(req.DoH); err != nil {
 			writeAPIError(w, fmt.Errorf("DoH 不可用：%w", err))
 			return
 		}
 	}
+
+	a.configMu.Lock()
+	cfg, err = readProxyConfig(a.configPath)
+	if err != nil {
+		a.configMu.Unlock()
+		writeAPIError(w, err)
+		return
+	}
+	restartNeeded := cfg.Listen != req.Listen || cfg.DoH != req.DoH
 	cfg.Listen = req.Listen
 	cfg.DoH = req.DoH
 	if req.PanelAuthEnabled {
@@ -209,6 +220,7 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.PanelPassword = req.PanelPassword
 		}
 		if cfg.PanelPassword == "" {
+			a.configMu.Unlock()
 			writeAPIError(w, errors.New("启用面板登录时必须设置密码"))
 			return
 		}
@@ -218,9 +230,11 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := writeProxyConfig(a.configPath, cfg); err != nil {
+		a.configMu.Unlock()
 		writeAPIError(w, err)
 		return
 	}
+	a.configMu.Unlock()
 	if restartNeeded {
 		if err := restartTurnsocks(cfg.Listen); err != nil {
 			writeAPIError(w, fmt.Errorf("已保存，但重启失败：%w", err))

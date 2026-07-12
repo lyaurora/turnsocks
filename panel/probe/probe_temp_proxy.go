@@ -51,9 +51,11 @@ func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (
 	}
 	listen := "127.0.0.1:" + strconv.Itoa(port)
 	statePath := filepath.Join(os.TempDir(), fmt.Sprintf("turnsocks-panel-test-%d.state", time.Now().UnixNano()))
+	configPath := statePath + ".env"
 
 	procCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(procCtx, bin,
+		"-config", configPath,
 		"-listen", listen,
 		"-turns", server,
 		"-doh", doh,
@@ -86,6 +88,7 @@ func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (
 			<-done
 		}
 		_ = os.Remove(statePath)
+		_ = os.Remove(configPath)
 	}
 
 	deadline := time.Now().Add(4 * time.Second)
@@ -94,6 +97,7 @@ func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (
 		case err := <-done:
 			cancel()
 			_ = os.Remove(statePath)
+			_ = os.Remove(configPath)
 			return "", nil, fmt.Errorf("临时 turnsocks 已退出：%w", err)
 		default:
 		}
