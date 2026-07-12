@@ -56,3 +56,19 @@ func TestInitialTurnServerPrefersRuntimeState(t *testing.T) {
 		t.Fatalf("got %q, want fallback %q", got.String(), servers[0].String())
 	}
 }
+
+func TestTurnPoolAddsFirstServer(t *testing.T) {
+	p := newTurnPool(nil, time.Minute, "")
+	if got := p.candidates(); len(got) != 0 {
+		t.Fatalf("empty pool returned %d candidates", len(got))
+	}
+
+	server := turnServerConfig{Addr: "turn-a:3478"}
+	changed, currentChanged, currentAddr, added, removed := p.updateServers([]turnServerConfig{server})
+	if !changed || !currentChanged || currentAddr != server.Addr || added != 1 || removed != 0 {
+		t.Fatalf("unexpected update result: changed=%v currentChanged=%v currentAddr=%q added=%d removed=%d", changed, currentChanged, currentAddr, added, removed)
+	}
+	if got := p.candidates(); len(got) != 1 || got[0].String() != server.String() {
+		t.Fatalf("first server was not activated: %#v", got)
+	}
+}

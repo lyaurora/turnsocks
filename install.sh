@@ -148,7 +148,7 @@ generate_panel_password() {
 create_default_config() {
   listen_addr=${LISTEN:-127.0.0.1:1080}
   doh_url=${DOH:-https://cloudflare-dns.com/dns-query}
-  turn_servers=${TURN_SERVERS:-127.0.0.1:3478}
+  turn_servers=${TURN_SERVERS-}
   panel_username=${PANEL_USERNAME:-admin}
   panel_password=$(generate_panel_password)
 
@@ -258,10 +258,6 @@ ensure_run_user
 ensure_install_dir
 set_runtime_owner "$INSTALL_DIR"
 install_config
-
-if grep -Eq 'turn\.example\.com|user:password|CHANGE_ME|127\.0\.0\.1:3478' "$CONFIG_FILE"; then
-  echo "$CONFIG_FILE contains placeholder TURN_SERVERS. Add a real TURN node in the panel after installation." >&2
-fi
 
 cd "$SCRIPT_DIR"
 TARGET=${TARGET:-$(target_platform)}

@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,10 +86,6 @@ func writeProxyConfig(path string, cfg proxyConfig) error {
 	if cfg.DoH == "" {
 		cfg.DoH = defaultDoH
 	}
-	if len(cfg.Servers) == 0 {
-		return errors.New("至少保留一个 TURN 节点")
-	}
-
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err

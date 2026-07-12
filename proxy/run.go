@@ -63,15 +63,14 @@ func Run() {
 	if err != nil {
 		log.Fatalf("load TURN config failed: %v", err)
 	}
-	if len(cfg.TurnServers) == 0 {
-		log.Fatal("missing TURN servers, set TURN_SERVERS in config.env")
-	}
 	cfg.TurnPool = newTurnPool(cfg.TurnServers, cfg.TurnCooldown, cfg.StatePath)
 	cfg.TCPAllocs = newTCPAllocationPool()
 	cfg.TCPAllocs.setAllowed(cfg.TurnServers)
 	cfg.UDPPrewarm = newUDPPrewarmPool()
 	cfg.UDPSessions = newUDPSessionRegistry()
-	cfg.TurnPool.markSuccess(initialTurnServer(cfg.TurnServers, readRuntimeState(cfg.StatePath)))
+	if len(cfg.TurnServers) > 0 {
+		cfg.TurnPool.markSuccess(initialTurnServer(cfg.TurnServers, readRuntimeState(cfg.StatePath)))
+	}
 	dohURL, err := url.ParseRequestURI(cfg.DoH)
 	if err != nil {
 		log.Fatalf("invalid DoH endpoint: %v", err)
@@ -82,7 +81,11 @@ func Run() {
 	cfg.DoHClient = &http.Client{Timeout: cfg.Timeout}
 
 	go prewarmDoH(cfg)
-	log.Printf("TURN servers: %s", strings.Join(turnServerAddrs(cfg.TurnServers), ", "))
+	if len(cfg.TurnServers) == 0 {
+		log.Printf("TURN servers: none configured; waiting for panel configuration")
+	} else {
+		log.Printf("TURN servers: %s", strings.Join(turnServerAddrs(cfg.TurnServers), ", "))
+	}
 	log.Printf("TURN auth: per-server inline only")
 	proxy := newProxyController(cfg)
 	if err := proxy.start(); err != nil {
