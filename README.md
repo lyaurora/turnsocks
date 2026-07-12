@@ -97,7 +97,7 @@ sudo systemctl restart turnsocks turnsocks-panel
 sudo journalctl -u turnsocks -f
 ```
 
-## 工作原理
+## 技术标准
 
 - TURN `ALLOCATE`、`REFRESH`、`CREATE-PERMISSION` 和 `SEND/DATA` 基于 [RFC 8656](https://www.rfc-editor.org/rfc/rfc8656)。
 - TCP relay 基于 [RFC 6062](https://www.rfc-editor.org/rfc/rfc6062)，通过 `CONNECT` 和 `CONNECTION-BIND` 建立数据连接。
@@ -126,8 +126,10 @@ BUILD_FROM_SOURCE=1 INSTALL_DIR="$HOME/turnsocks" ./install.sh
 - 仅支持 IPv4 目标地址，尚未实现 [RFC 6156](https://www.rfc-editor.org/rfc/rfc6156) IPv6 relay。
 - SOCKS5 UDP 仅接受 `FRAG=0`，不支持 UDP 分片。
 
-## 来源与协议
+## 思路来源
 
-项目思路来源于 [ToiCF/CF-Workers-TURN](https://github.com/ToiCF/CF-Workers-TURN)。
+[ToiCF/CF-Workers-TURN](https://github.com/ToiCF/CF-Workers-TURN)
 
-本项目采用 [GPL-3.0 License](LICENSE)。
+## 开源许可
+
+[GPL-3.0](LICENSE)
