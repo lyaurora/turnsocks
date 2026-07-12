@@ -69,7 +69,7 @@ func (a *app) handleAddServer(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	writeJSON(w, apiResponse{OK: true, Message: "已添加节点"})
+	writeJSON(w, apiResponse{OK: true, Message: "节点已添加"})
 }
 
 func (a *app) handleSelectServer(w http.ResponseWriter, r *http.Request) {
@@ -109,15 +109,15 @@ func (a *app) handleSelectServer(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := writeRuntimeState(a.statePath, selected.Addr); err != nil {
 		a.configMu.Unlock()
-		writeAPIError(w, fmt.Errorf("已保存，但状态写入失败：%w", err))
+		writeAPIError(w, fmt.Errorf("节点顺序已保存，但状态写入失败：%w", err))
 		return
 	}
 	a.configMu.Unlock()
 	if err := restartTurnsocks(cfg.Listen); err != nil {
-		writeAPIError(w, fmt.Errorf("已保存，但重启失败：%w", err))
+		writeAPIError(w, fmt.Errorf("节点顺序已保存，但代理重启失败：%w", err))
 		return
 	}
-	writeJSON(w, apiResponse{OK: true, Message: "已切换并重启"})
+	writeJSON(w, apiResponse{OK: true, Message: "节点已切换，代理已重启"})
 }
 
 func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
@@ -154,10 +154,10 @@ func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 	}
 	a.deleteServerTest(req.Server)
 	if wasCurrent {
-		writeJSON(w, apiResponse{OK: true, Message: "已删除当前节点，新连接将使用剩余节点"})
+		writeJSON(w, apiResponse{OK: true, Message: "当前节点已删除，新连接将使用其他节点"})
 		return
 	}
-	writeJSON(w, apiResponse{OK: true, Message: "已删除节点"})
+	writeJSON(w, apiResponse{OK: true, Message: "节点已删除"})
 }
 
 func (a *app) handleRestart(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +176,7 @@ func (a *app) handleRestart(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	writeJSON(w, apiResponse{OK: true, Message: "已重启代理"})
+	writeJSON(w, apiResponse{OK: true, Message: "代理已重启"})
 }
 
 func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
@@ -237,10 +237,10 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	a.configMu.Unlock()
 	if restartNeeded {
 		if err := restartTurnsocks(cfg.Listen); err != nil {
-			writeAPIError(w, fmt.Errorf("已保存，但重启失败：%w", err))
+			writeAPIError(w, fmt.Errorf("配置已保存，但代理重启失败：%w", err))
 			return
 		}
-		writeJSON(w, apiResponse{OK: true, Message: "配置已保存并重启代理"})
+		writeJSON(w, apiResponse{OK: true, Message: "配置已保存，代理已重启"})
 		return
 	}
 	writeJSON(w, apiResponse{OK: true, Message: "配置已保存"})

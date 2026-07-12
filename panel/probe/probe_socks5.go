@@ -56,7 +56,7 @@ func socks5Connect(conn net.Conn, target string, timeout time.Duration) error {
 		return err
 	}
 	if buf[0] != 0x05 || buf[1] != 0x00 {
-		return errors.New("SOCKS5 no-auth 被拒绝")
+		return errors.New("SOCKS5 无需认证模式被拒绝")
 	}
 
 	host, port, err := net.SplitHostPort(target)
@@ -176,7 +176,7 @@ func socks5UDPAssociate(proxyAddr string, timeout time.Duration) (net.Conn, *net
 	}
 	if buf[0] != 0x05 || buf[1] != 0x00 {
 		_ = conn.Close()
-		return nil, nil, errors.New("SOCKS5 no-auth 被拒绝")
+		return nil, nil, errors.New("SOCKS5 无需认证模式被拒绝")
 	}
 	if _, err := conn.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
 		_ = conn.Close()

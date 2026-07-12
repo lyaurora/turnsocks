@@ -53,12 +53,12 @@ func scoreServerTest(resp Result) int {
 func serverTestMessage(resp Result) string {
 	if resp.SingleThread.OK || resp.MultiThread.OK {
 		if !resp.SOCKSUDP.OK || !resp.SingleThread.OK || !resp.MultiThread.OK {
-			return fmt.Sprintf("测试完成，部分项目失败：单线 %.1f Mbps，多线 %.1f Mbps，评分 %d", resp.SingleThread.Mbps, resp.MultiThread.Mbps, resp.Score)
+			return fmt.Sprintf("测试完成，部分项目失败：单线程 %.1f Mbps，多线程 %.1f Mbps，综合评分 %d", resp.SingleThread.Mbps, resp.MultiThread.Mbps, resp.Score)
 		}
-		return fmt.Sprintf("测试完成：单线 %.1f Mbps，多线 %.1f Mbps，评分 %d", resp.SingleThread.Mbps, resp.MultiThread.Mbps, resp.Score)
+		return fmt.Sprintf("测试完成：单线程 %.1f Mbps，多线程 %.1f Mbps，综合评分 %d", resp.SingleThread.Mbps, resp.MultiThread.Mbps, resp.Score)
 	}
 	if resp.TCPConnect.OK {
-		return fmt.Sprintf("测试失败：未测出可用带宽，TCP %.1f ms，评分 %d", resp.TCPConnect.AvgMS, resp.Score)
+		return fmt.Sprintf("测试失败：未测出可用带宽，TCP 延迟 %.1f ms，综合评分 %d", resp.TCPConnect.AvgMS, resp.Score)
 	}
 	return "测试失败"
 }

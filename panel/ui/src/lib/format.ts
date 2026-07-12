@@ -23,7 +23,7 @@ export function displayHost(node?: ServerInfo) {
 
 export function errorMessage(error: unknown) {
   if (error instanceof Error) {
-    return error.message === "Failed to fetch" ? "连接面板失败" : error.message;
+    return error.message === "Failed to fetch" ? "无法连接面板" : error.message;
   }
   return "操作失败";
 }

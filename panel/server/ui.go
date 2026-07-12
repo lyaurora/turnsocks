@@ -147,9 +147,9 @@ const loginHTML = `<!doctype html>
 <body>
   <form class="card" method="post" action="/login">
     <h1>turnsocks</h1>
-    <p>登录后继续管理 TURN 节点和本地代理配置。</p>
+    <p>登录以管理 TURN 节点和代理配置。</p>
     {{ERROR}}
-    <label>用户
+    <label>用户名
       <input name="username" autocomplete="username" autofocus>
     </label>
     <label>密码
