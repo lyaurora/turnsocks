@@ -1,4 +1,4 @@
-import type { PanelState } from "../types/panel";
+import type { ApiResponse, ConfigForm, PanelState, ServerTest } from "../types/panel";
 
 async function readJSON<T>(res: Response): Promise<T> {
   if (res.status === 401) {
@@ -17,7 +17,7 @@ export async function getState() {
   return readJSON<PanelState>(res);
 }
 
-export async function postJSON<T>(path: string, body?: unknown) {
+async function postJSON<T>(path: string, body?: unknown) {
   const res = await fetch(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -25,3 +25,10 @@ export async function postJSON<T>(path: string, body?: unknown) {
   });
   return readJSON<T>(res);
 }
+
+export const addServer = (server: string) => postJSON<ApiResponse>("/api/servers/add", { server });
+export const selectServer = (server: string) => postJSON<ApiResponse>("/api/servers/select", { server });
+export const deleteServer = (server: string) => postJSON<ApiResponse>("/api/servers/delete", { server });
+export const testServer = (server: string) => postJSON<ServerTest>("/api/servers/test", { server });
+export const updateConfig = (config: ConfigForm) => postJSON<ApiResponse>("/api/config/update", config);
+export const restartProxy = () => postJSON<ApiResponse>("/api/restart");
