@@ -3,10 +3,12 @@ package proxy
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +22,42 @@ type recordingSTUNConn struct {
 	writeCount atomic.Int32
 	onWrite    func(*stun.Message, int)
 	readFunc   func(time.Duration) (*stun.Message, error)
+}
+
+type retryListener struct {
+	conn      net.Conn
+	calls     atomic.Int32
+	accepted  chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+type temporaryAcceptError struct{}
+
+func (temporaryAcceptError) Error() string   { return "temporary accept failure" }
+func (temporaryAcceptError) Timeout() bool   { return false }
+func (temporaryAcceptError) Temporary() bool { return true }
+
+func (l *retryListener) Accept() (net.Conn, error) {
+	switch l.calls.Add(1) {
+	case 1:
+		return nil, temporaryAcceptError{}
+	case 2:
+		close(l.accepted)
+		return l.conn, nil
+	default:
+		<-l.closed
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *retryListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *retryListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
 }
 
 func (c *recordingSTUNConn) readMessage(timeout time.Duration) (*stun.Message, error) {
@@ -71,6 +109,29 @@ func TestUDPSessionFailureClosesControlConnection(t *testing.T) {
 	if _, err := client.Read(buf[:]); !errors.Is(err, io.EOF) {
 		t.Fatalf("control connection read error = %v, want EOF", err)
 	}
+}
+
+func TestAcceptLoopRecoversAfterError(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	ln := &retryListener{
+		conn:     server,
+		accepted: make(chan struct{}),
+		closed:   make(chan struct{}),
+	}
+	p := &proxyController{
+		cfg:     Config{Timeout: time.Second},
+		ln:      ln,
+		running: true,
+	}
+
+	go p.acceptLoop(ln)
+	select {
+	case <-ln.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("accept loop did not recover after an error")
+	}
+	p.stop()
 }
 
 func TestUDPSessionCloseReleasesAllocation(t *testing.T) {
@@ -169,6 +230,93 @@ func TestValidateLongTermIntegrity(t *testing.T) {
 	}
 	if err := validateLongTermIntegrity(res, username, "wrong", &realm); err == nil {
 		t.Fatal("response with invalid integrity was accepted")
+	}
+}
+
+func TestRefreshAllocationRetriesUnsignedStaleNonce(t *testing.T) {
+	const username = "user"
+	const password = "password"
+	realm := stun.Realm("example.org")
+	nonce := stun.Nonce("old-nonce")
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		first, err := readSTUNMessage(server)
+		if err != nil {
+			done <- err
+			return
+		}
+		stale := stun.New()
+		stale.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassErrorResponse}
+		stale.TransactionID = first.TransactionID
+		stun.ErrorCodeAttribute{Code: stun.CodeStaleNonce, Reason: []byte("Stale Nonce")}.AddTo(stale)
+		stun.Nonce("new-nonce").AddTo(stale)
+		realm.AddTo(stale)
+		if err := writeSTUNMessage(server, stale); err != nil {
+			done <- err
+			return
+		}
+
+		second, err := readSTUNMessage(server)
+		if err != nil {
+			done <- err
+			return
+		}
+		var gotNonce stun.Nonce
+		if err := gotNonce.GetFrom(second); err != nil || gotNonce.String() != "new-nonce" {
+			done <- fmt.Errorf("retry nonce = %q, err = %v", gotNonce.String(), err)
+			return
+		}
+		success := stun.New()
+		success.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassSuccessResponse}
+		success.TransactionID = second.TransactionID
+		success.WriteHeader()
+		if err := stun.NewLongTermIntegrity(username, realm.String(), password).AddTo(success); err != nil {
+			done <- err
+			return
+		}
+		done <- writeSTUNMessage(server, success)
+	}()
+
+	err := refreshAllocation(client, Config{Timeout: time.Second}, username, password, &realm, &nonce, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonce.String() != "new-nonce" {
+		t.Fatalf("stored nonce = %q, want new-nonce", nonce.String())
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRetiredTCPAllocationClosesAfterLastPeer(t *testing.T) {
+	ctrlClient, ctrlServer := net.Pipe()
+	defer ctrlServer.Close()
+	a := &tcpAllocation{
+		ctrlConn:    ctrlClient,
+		stop:        make(chan struct{}),
+		activePeers: map[string]struct{}{"active": {}, "timed-out": {}},
+		dataConns:   make(map[net.Conn]struct{}),
+	}
+
+	a.retire()
+	if a.isClosed() {
+		t.Fatal("retired allocation closed while peers were active")
+	}
+	if a.tryReservePeer("new") {
+		t.Fatal("retired allocation accepted a new peer")
+	}
+	a.releasePeer("timed-out")
+	if a.isClosed() {
+		t.Fatal("retired allocation closed before the last peer ended")
+	}
+	a.releasePeer("active")
+	if !a.isClosed() {
+		t.Fatal("retired allocation stayed open after the last peer ended")
 	}
 }
 

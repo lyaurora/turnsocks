@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"errors"
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 type proxyController struct {
@@ -36,17 +38,34 @@ func (p *proxyController) start() error {
 }
 
 func (p *proxyController) acceptLoop(ln net.Listener) {
+	var retryDelay time.Duration
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			p.mu.Lock()
 			current := p.ln == ln && p.running
 			p.mu.Unlock()
-			if current {
-				log.Printf("accept failed: %v", err)
+			if !current || errors.Is(err, net.ErrClosed) {
+				return
 			}
-			return
+			netErr, temporary := err.(net.Error)
+			if !temporary || !netErr.Temporary() {
+				log.Printf("accept failed: %v", err)
+				return
+			}
+			if retryDelay == 0 {
+				retryDelay = 5 * time.Millisecond
+			} else {
+				retryDelay *= 2
+				if retryDelay > time.Second {
+					retryDelay = time.Second
+				}
+			}
+			log.Printf("accept failed; retrying in %s: %v", retryDelay, err)
+			time.Sleep(retryDelay)
+			continue
 		}
+		retryDelay = 0
 		go handleSocksConn(c, p.cfg)
 	}
 }

@@ -225,6 +225,10 @@ func validateLongTermIntegrity(res *stun.Message, username string, password stri
 		return errors.New("cannot validate TURN response without realm")
 	}
 	if err := stun.NewLongTermIntegrity(username, realm.String(), password).Check(res); err != nil {
+		code, _ := getErrorCode(res)
+		if errors.Is(err, stun.ErrAttributeNotFound) && res.Type.Class == stun.ClassErrorResponse && (code == 401 || code == staleNonceCode) {
+			return nil
+		}
 		return fmt.Errorf("TURN response MESSAGE-INTEGRITY check failed: %w", err)
 	}
 	return nil

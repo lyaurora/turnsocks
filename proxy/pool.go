@@ -487,6 +487,30 @@ func (p *tcpAllocationPool) invalidate(turn turnServerConfig, allocation *tcpAll
 	allocation.close()
 }
 
+func (p *tcpAllocationPool) retire(turn turnServerConfig, allocation *tcpAllocation) {
+	if p == nil || allocation == nil {
+		return
+	}
+	key := turn.String()
+	p.mu.Lock()
+	allocs := p.allocs[key]
+	for i, a := range allocs {
+		if a != allocation {
+			continue
+		}
+		copy(allocs[i:], allocs[i+1:])
+		allocs = allocs[:len(allocs)-1]
+		if len(allocs) == 0 {
+			delete(p.allocs, key)
+		} else {
+			p.allocs[key] = allocs
+		}
+		break
+	}
+	p.mu.Unlock()
+	allocation.retire()
+}
+
 func newReservedTCPAllocation(cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, error) {
 	a, err := newTCPAllocation(cfg, turn)
 	if err != nil {

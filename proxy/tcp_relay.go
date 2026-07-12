@@ -26,6 +26,7 @@ type tcpAllocation struct {
 	stop        chan struct{}
 	ctrlMu      sync.Mutex
 	closed      atomic.Bool
+	retired     atomic.Bool
 	closeOnce   sync.Once
 	peerMu      sync.Mutex
 	activePeers map[string]struct{}
@@ -157,9 +158,14 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 	dataConn, err := allocation.connect(targetIP, targetPort)
 	if err != nil {
 		allocation.finishConnect()
-		cfg.TCPAllocs.release(turn, allocation, peer)
-		if isTurnServerFailure(err) || isTimeoutError(err) {
+		if isTurnServerFailure(err) {
+			cfg.TCPAllocs.release(turn, allocation, peer)
 			cfg.TCPAllocs.invalidate(turn, allocation)
+		} else if isTimeoutError(err) {
+			cfg.TCPAllocs.retire(turn, allocation)
+			cfg.TCPAllocs.release(turn, allocation, peer)
+		} else {
+			cfg.TCPAllocs.release(turn, allocation, peer)
 		}
 		return nil, nil, err
 	}
@@ -369,12 +375,12 @@ func (a *tcpAllocation) isClosed() bool {
 }
 
 func (a *tcpAllocation) tryReservePeer(peer string) bool {
-	if a.isClosed() {
+	if a.isClosed() || a.retired.Load() {
 		return false
 	}
 	a.peerMu.Lock()
 	defer a.peerMu.Unlock()
-	if a.isClosed() {
+	if a.isClosed() || a.retired.Load() {
 		return false
 	}
 	if a.connecting > 0 {
@@ -399,7 +405,21 @@ func (a *tcpAllocation) finishConnect() {
 func (a *tcpAllocation) releasePeer(peer string) {
 	a.peerMu.Lock()
 	delete(a.activePeers, peer)
+	closeNow := a.retired.Load() && len(a.activePeers) == 0 && a.connecting == 0
 	a.peerMu.Unlock()
+	if closeNow {
+		a.close()
+	}
+}
+
+func (a *tcpAllocation) retire() {
+	a.retired.Store(true)
+	a.peerMu.Lock()
+	closeNow := len(a.activePeers) == 0 && a.connecting == 0
+	a.peerMu.Unlock()
+	if closeNow {
+		a.close()
+	}
 }
 
 func (a *tcpAllocation) hasActivePeers() bool {
