@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { addServer as addServerRequest, deleteServer, getState, restartProxy, selectServer, testServer as testServerRequest, updateConfig as updateConfigRequest } from "../api/client";
 import { Chip, IconDot } from "../components/Chip";
 import { topButtonClass } from "../controlClasses";
@@ -23,6 +24,12 @@ const emptyConfig: ConfigForm = {
   panelUsername: "",
   panelPassword: ""
 };
+
+function applyTheme(theme: ThemeMode) {
+  const dark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  document.documentElement.classList.toggle("dark", dark);
+  localStorage.setItem("turnsocks-theme", theme);
+}
 
 function App() {
   const [state, setState] = useState<PanelState>(emptyState);
@@ -77,16 +84,29 @@ function App() {
   }, [refresh]);
 
   useEffect(() => {
-    const applyTheme = () => {
-      const dark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
-      document.documentElement.classList.toggle("dark", dark);
-      localStorage.setItem("turnsocks-theme", theme);
-    };
-    applyTheme();
+    const syncSystemTheme = () => applyTheme(theme);
+    syncSystemTheme();
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
-    media?.addEventListener("change", applyTheme);
-    return () => media?.removeEventListener("change", applyTheme);
+    media?.addEventListener("change", syncSystemTheme);
+    return () => media?.removeEventListener("change", syncSystemTheme);
   }, [theme]);
+
+  function changeTheme(mode: ThemeMode, button: HTMLButtonElement) {
+    if (mode === theme) return;
+    const rect = button.getBoundingClientRect();
+    document.documentElement.style.setProperty("--theme-x", `${rect.left + rect.width / 2}px`);
+    document.documentElement.style.setProperty("--theme-y", `${rect.top + rect.height / 2}px`);
+    const update = () => {
+      flushSync(() => setTheme(mode));
+      applyTheme(mode);
+    };
+    const transitionDocument = document as Document & { startViewTransition?: (callback: () => void) => void };
+    if (transitionDocument.startViewTransition && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      transitionDocument.startViewTransition(update);
+    } else {
+      update();
+    }
+  }
 
   async function run(action: () => Promise<ApiResponse>, refreshAfter = true) {
     if (busyRef.current) return false;
@@ -206,7 +226,7 @@ function App() {
             </form>
             <div className="flex rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/80 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] dark:shadow-none">
               {(["light", "system", "dark"] as ThemeMode[]).map((mode) => (
-                <button key={mode} onClick={() => setTheme(mode)} className={`cursor-pointer rounded-full px-[9px] py-1 font-mono text-[11px] transition-all ${theme === mode ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-[0_1px_3px_rgba(0,0,0,0.08)]" : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`} type="button">
+                <button key={mode} onClick={(event) => changeTheme(mode, event.currentTarget)} className={`cursor-pointer rounded-full px-[9px] py-1 font-mono text-[11px] transition-all ${theme === mode ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-[0_1px_3px_rgba(0,0,0,0.08)]" : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`} type="button">
                   {mode === "light" ? "浅色" : mode === "system" ? "跟随" : "深色"}
                 </button>
               ))}
