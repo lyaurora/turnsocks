@@ -46,6 +46,15 @@ const loginHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>登录 turnsocks</title>
+  <script>
+    (() => {
+      const theme = localStorage.getItem("turnsocks-theme") || "system";
+      const media = matchMedia("(prefers-color-scheme: dark)");
+      const apply = () => document.documentElement.classList.toggle("dark", theme === "dark" || (theme === "system" && media.matches));
+      apply();
+      if (theme === "system") media.addEventListener?.("change", apply);
+    })();
+  </script>
   <style>
     :root {
       color-scheme: light;
@@ -60,6 +69,20 @@ const loginHTML = `<!doctype html>
       --input: 36 15% 82%;
       --ring: 184 27% 25%;
       --danger: 5 62% 48%;
+    }
+    .dark {
+      color-scheme: dark;
+      --background: 200 17% 10%;
+      --foreground: 42 20% 92%;
+      --card: 195 16% 12%;
+      --muted: 196 12% 17%;
+      --muted-foreground: 42 12% 68%;
+      --primary: 167 29% 62%;
+      --primary-foreground: 196 18% 10%;
+      --border: 196 10% 24%;
+      --input: 196 10% 24%;
+      --ring: 167 29% 62%;
+      --danger: 6 73% 63%;
     }
     * { box-sizing: border-box; }
     body {
@@ -85,6 +108,7 @@ const loginHTML = `<!doctype html>
       box-shadow: 0 24px 60px rgba(57,63,51,.10);
       padding: 24px;
     }
+    .dark .card { box-shadow: 0 24px 60px rgba(0,0,0,.4); }
     h1 {
       margin: 0 0 8px;
       font-size: 32px;
