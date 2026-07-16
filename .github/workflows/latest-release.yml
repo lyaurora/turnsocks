@@ -51,7 +51,7 @@ jobs:
         run: |
           git tag -f latest "$GITHUB_SHA"
           git push -f origin latest
-          if gh release view latest >/dev/null 2>&1; then
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/latest" >/dev/null 2>&1; then
             gh release upload latest dist/turnsocks-linux-* dist/turnsocks-panel-linux-* --clobber
             gh release upload latest dist/SHA256SUMS --clobber
             gh release edit latest --title "latest" --notes "Automated latest build from ${GITHUB_SHA}." --latest
