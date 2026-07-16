@@ -1,8 +1,8 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { addServer as addServerRequest, deleteServer, getState, restartProxy, selectServer, testServer as testServerRequest, updateConfig as updateConfigRequest } from "../api/client";
-import { Chip, IconDot } from "../components/Chip";
-import { topButtonClass } from "../controlClasses";
+import { IconLogout, IconMonitor, IconMoon, IconRefresh, IconRelay, IconSun } from "../components/icons";
+import { ghostButtonClass, topButtonClass } from "../controlClasses";
 import { NodePanel } from "../features/nodes/NodePanel";
 import { SettingsPanel } from "../features/settings/SettingsPanel";
 import { errorMessage } from "../lib/format";
@@ -213,23 +213,45 @@ function App() {
   return (
     <div className="min-h-screen p-4 pb-12 md:p-6">
       <div className="relative z-10 mx-auto max-w-[1180px]">
-        <header className="mb-6 flex flex-col justify-between gap-4 md:mb-8 md:flex-row md:items-center">
-          <h1 className="text-[32px] font-bold leading-none tracking-tight text-[hsl(var(--foreground))] md:text-[42px]">turnsocks</h1>
+        <header className="mb-6 flex flex-col justify-between gap-4 md:mb-7 md:flex-row md:items-center">
+          <div className="flex items-center gap-3">
+            <div className="grid h-8 w-8 flex-none place-items-center rounded-[9px] bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(99,102,241,0.35)]">
+              <IconRelay className="h-[17px] w-[17px]" />
+            </div>
+            <h1 className="text-[17px] font-semibold leading-none text-[hsl(var(--foreground))]">turnsocks</h1>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`inline-flex min-h-[30px] items-center justify-center gap-1.5 rounded-full border px-[11px] pt-[2px] font-mono text-[11px] uppercase leading-none tracking-[0.12em] ${state.service.active ? "border-[hsl(var(--warn))]/30 bg-[hsl(var(--warn))]/10 text-[hsl(var(--warn))]" : "border-[hsl(var(--danger))]/30 bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]"}`}>
-              <IconDot />
-              {state.service.active ? "服务运行中" : "服务已停止"}
+            <span className="inline-flex h-[34px] items-center gap-2 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-[13px] text-[13px] font-medium leading-none text-[hsl(var(--foreground))] shadow-sm">
+              {state.service.active ? (
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[hsl(var(--ok))] opacity-60 motion-reduce:animate-none" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[hsl(var(--ok))]" />
+                </span>
+              ) : (
+                <span className="flex h-2 w-2 rounded-full bg-[hsl(var(--danger))]" />
+              )}
+              {state.service.active ? "代理运行中" : "代理已停止"}
             </span>
-            <button className={topButtonClass} disabled={busy} onClick={() => run(restartProxy)} type="button">重启代理</button>
+            <button className={topButtonClass} disabled={busy} onClick={() => run(restartProxy)} type="button">
+              <IconRefresh className="h-3.5 w-3.5" />
+              重启代理
+            </button>
             <form action="/logout" method="post">
-              <button className={topButtonClass} type="submit">退出登录</button>
+              <button className={ghostButtonClass} type="submit">
+                <IconLogout className="h-3.5 w-3.5" />
+                退出登录
+              </button>
             </form>
-            <div className="flex rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/80 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] dark:shadow-none">
-              {(["light", "system", "dark"] as ThemeMode[]).map((mode) => (
-                <button key={mode} onClick={(event) => changeTheme(mode, event.currentTarget)} className={`inline-flex min-h-[24px] cursor-pointer items-center justify-center rounded-full px-[9px] pt-[2px] font-mono text-[11px] leading-none transition-all ${theme === mode ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-[0_1px_3px_rgba(0,0,0,0.08)]" : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`} type="button">
-                  {mode === "light" ? "浅色" : mode === "system" ? "系统" : "深色"}
-                </button>
-              ))}
+            <div className="flex gap-0.5 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-[3px] shadow-sm">
+              {(["light", "system", "dark"] as ThemeMode[]).map((mode) => {
+                const Icon = mode === "light" ? IconSun : mode === "system" ? IconMonitor : IconMoon;
+                const label = mode === "light" ? "浅色" : mode === "system" ? "跟随系统" : "深色";
+                return (
+                  <button key={mode} aria-label={label} aria-pressed={theme === mode} title={label} onClick={(event) => changeTheme(mode, event.currentTarget)} className={`grid h-[26px] w-[30px] cursor-pointer place-items-center rounded-full transition-colors ${theme === mode ? "bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]" : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`} type="button">
+                    <Icon className="h-3.5 w-3.5" />
+                  </button>
+                );
+              })}
             </div>
           </div>
         </header>
@@ -252,7 +274,7 @@ function App() {
         </div>
       </div>
 
-      <div className={`pointer-events-none fixed bottom-5 left-1/2 z-50 max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 rounded-[1rem] border border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 px-4 py-3 text-[hsl(var(--foreground))] shadow-[0_24px_60px_rgba(57,63,51,.16)] transition-all ${toast ? "opacity-100" : "opacity-0"}`}>
+      <div className={`pointer-events-none fixed bottom-5 left-1/2 z-50 max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 rounded-[11px] border border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 px-4 py-3 text-[13px] font-medium text-[hsl(var(--foreground))] shadow-[0_8px_30px_rgba(0,0,0,.12)] transition-all ${toast ? "opacity-100" : "opacity-0"}`}>
         {toast}
       </div>
     </div>

@@ -1,17 +1,14 @@
 import type { ReactNode } from "react";
 
-export function Chip({ children, active, warn, danger }: { children: ReactNode; active?: boolean; warn?: boolean; danger?: boolean }) {
-  let colorClass = "border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--muted-foreground))]";
-  if (active) colorClass = "border-[hsl(var(--ok))]/30 bg-[hsl(var(--ok))]/10 text-[hsl(var(--ok))]";
-  if (warn) colorClass = "border-[hsl(var(--warn))]/30 bg-[hsl(var(--warn))]/10 text-[hsl(var(--warn))]";
-  if (danger) colorClass = "border-[hsl(var(--danger))]/30 bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]";
+export function Chip({ children, active, warn, danger, mono }: { children: ReactNode; active?: boolean; warn?: boolean; danger?: boolean; mono?: boolean }) {
+  let colorClass = "border-[hsl(var(--border))] bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]";
+  if (active) colorClass = "border-transparent bg-[hsl(var(--ok))]/10 text-[hsl(var(--ok))]";
+  if (warn) colorClass = "border-transparent bg-[hsl(var(--warn))]/12 text-[hsl(var(--warn))]";
+  if (danger) colorClass = "border-transparent bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]";
   return (
-    <span className={`inline-flex min-h-[30px] items-center justify-center rounded-full border px-[11px] pt-[2px] font-mono text-[11px] uppercase leading-none tracking-[0.12em] whitespace-nowrap ${colorClass}`}>
+    <span className={`inline-flex min-h-[24px] items-center gap-1.5 whitespace-nowrap rounded-[7px] border px-2 leading-none ${mono ? "font-mono text-[11.5px]" : "text-[12px] font-medium"} ${colorClass}`}>
+      {active && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
       {children}
     </span>
   );
-}
-
-export function IconDot() {
-  return <span className="h-2 w-2 rounded-full bg-current" />;
 }
