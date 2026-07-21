@@ -98,7 +98,7 @@ const loginHTML = `<!doctype html>
     .card {
       width: min(380px, 100%);
       border: 1px solid hsl(var(--border));
-      border-radius: 16px;
+      border-radius: 14px;
       background: hsl(var(--card));
       box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 30px rgba(0,0,0,.06);
       padding: 26px;
@@ -143,7 +143,7 @@ const loginHTML = `<!doctype html>
     }
     input {
       width: 100%;
-      min-height: 40px;
+      min-height: 38px;
       border-radius: 9px;
       border: 1px solid hsl(var(--input));
       background: hsl(var(--card));
@@ -159,7 +159,7 @@ const loginHTML = `<!doctype html>
     }
     button {
       width: 100%;
-      min-height: 40px;
+      min-height: 38px;
       margin-top: 20px;
       border: 0;
       border-radius: 9px;

@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { addServer as addServerRequest, deleteServer, getState, restartProxy, selectServer, testServer as testServerRequest, updateConfig as updateConfigRequest } from "../api/client";
 import { IconAlert, IconLogout, IconMonitor, IconMoon, IconRefresh, IconRelay, IconSun, IconTrash } from "../components/icons";
-import { ghostButtonClass, topButtonClass } from "../controlClasses";
+import { secondaryTopButtonClass, topButtonClass } from "../controlClasses";
 import { NodePanel } from "../features/nodes/NodePanel";
 import { SettingsPanel } from "../features/settings/SettingsPanel";
 import { errorMessage } from "../lib/format";
@@ -228,7 +228,7 @@ function App() {
   return (
     <div className="min-h-screen p-4 pb-12 md:p-6">
       <div className="relative z-10 mx-auto max-w-[1180px]">
-        <header className="mb-6 flex flex-col justify-between gap-4 md:mb-7 md:flex-row md:items-center">
+        <header className="mb-6 flex flex-col justify-between gap-4 md:mb-7 lg:flex-row lg:items-center">
           <div className="flex items-center gap-3">
             <div className="grid h-8 w-8 flex-none place-items-center rounded-[9px] bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(99,102,241,0.35)]">
               <IconRelay className="h-[17px] w-[17px]" />
@@ -252,7 +252,7 @@ function App() {
               重启代理
             </button>
             <form action="/logout" method="post">
-              <button className={ghostButtonClass} type="submit">
+              <button className={secondaryTopButtonClass} type="submit">
                 <IconLogout className="h-3.5 w-3.5" />
                 退出登录
               </button>
@@ -271,7 +271,7 @@ function App() {
           </div>
         </header>
 
-        <div className="grid grid-cols-1 items-start gap-5 md:grid-cols-[minmax(0,1fr)_340px] lg:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_420px]">
           <NodePanel
             state={state}
             serverInput={serverInput}
@@ -298,7 +298,7 @@ function App() {
         </div>
       )}
 
-      <div aria-atomic="true" aria-live="polite" role="status" className={`pointer-events-none fixed bottom-5 left-1/2 z-50 max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 rounded-[11px] border border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 px-4 py-3 text-[13px] font-medium text-[hsl(var(--foreground))] shadow-[0_8px_30px_rgba(0,0,0,.12)] transition-all ${toast ? "opacity-100" : "opacity-0"}`}>
+      <div aria-atomic="true" aria-live="polite" role="status" className={`pointer-events-none fixed bottom-5 left-1/2 z-50 max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 px-4 py-3 text-[13px] font-medium text-[hsl(var(--foreground))] shadow-[0_8px_30px_rgba(0,0,0,.12)] transition-all ${toast ? "opacity-100" : "opacity-0"}`}>
         {toast}
       </div>
 
