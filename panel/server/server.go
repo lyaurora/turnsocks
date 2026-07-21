@@ -38,6 +38,7 @@ func Run(opts Options) error {
 	mux.HandleFunc("/api/servers/add", a.handleAddServer)
 	mux.HandleFunc("/api/servers/select", a.handleSelectServer)
 	mux.HandleFunc("/api/servers/delete", a.handleDeleteServer)
+	mux.HandleFunc("/api/servers/note", a.handleUpdateServerNote)
 	mux.HandleFunc("/api/servers/test", a.handleServerTest)
 	mux.HandleFunc("/api/config/update", a.handleUpdateConfig)
 	mux.HandleFunc("/api/restart", a.handleRestart)

@@ -37,6 +37,7 @@ type serverTestResponse = probe.Result
 type proxyConfig struct {
 	Listen        string
 	Servers       []string
+	ServerNotes   map[string]string
 	DoH           string
 	PanelUsername string
 	PanelPassword string
@@ -45,6 +46,7 @@ type proxyConfig struct {
 type serverInfo struct {
 	Raw      string              `json:"raw"`
 	Addr     string              `json:"addr"`
+	Note     string              `json:"note,omitempty"`
 	Username string              `json:"username,omitempty"`
 	HasAuth  bool                `json:"hasAuth"`
 	Current  bool                `json:"current"`
@@ -68,6 +70,7 @@ type stateResponse struct {
 
 type serverRequest struct {
 	Server string `json:"server"`
+	Note   string `json:"note,omitempty"`
 }
 
 type configRequest struct {

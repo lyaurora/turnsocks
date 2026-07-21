@@ -45,6 +45,7 @@ export type ServerTest = {
 export type ServerInfo = {
   raw: string;
   addr: string;
+  note?: string;
   username?: string;
   hasAuth: boolean;
   current: boolean;

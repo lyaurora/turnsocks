@@ -1,7 +1,7 @@
-import type { FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Chip } from "../../components/Chip";
-import { IconAlert, IconPlus, IconTrash, IconZap } from "../../components/icons";
-import { iconDangerButtonClass, inputClass, primaryButtonClass, smallButtonClass, softButtonClass } from "../../controlClasses";
+import { IconAlert, IconEdit, IconPlus, IconTrash, IconZap } from "../../components/icons";
+import { iconDangerButtonClass, inputClass, primaryButtonClass, smallButtonClass, softButtonClass, topButtonClass } from "../../controlClasses";
 import { displayHost, formatTestTime, mbps, ms } from "../../lib/format";
 import type { PanelState } from "../../types/panel";
 
@@ -17,6 +17,7 @@ type Props = {
   onTestAll: () => void;
   onSelectServer: (server: string) => void;
   onDeleteServer: (server: string) => void;
+  onUpdateNote: (server: string, note: string) => Promise<boolean>;
 };
 
 const toneText: Record<string, string> = {
@@ -30,8 +31,32 @@ function latencyTone(avgMs?: number) {
   return avgMs! <= 80 ? "ok" : avgMs! <= 160 ? "warn" : "danger";
 }
 
-export function NodePanel({ state, serverInput, testing, busy, locked, onServerInput, onAddServer, onTestServer, onTestAll, onSelectServer, onDeleteServer }: Props) {
+function NoteChip({ note }: { note: string }) {
+  return <Chip accent><span className="block max-w-[180px] truncate sm:max-w-[260px]" title={note}>{note}</span></Chip>;
+}
+
+export function NodePanel({ state, serverInput, testing, busy, locked, onServerInput, onAddServer, onTestServer, onTestAll, onSelectServer, onDeleteServer, onUpdateNote }: Props) {
   const currentServer = state.servers.find((server) => server.current) || state.servers[0];
+  const [editing, setEditing] = useState("");
+  const [note, setNote] = useState("");
+  const noteDialog = useRef<HTMLDialogElement>(null);
+  const hasExistingNote = !!state.servers.find((server) => server.raw === editing)?.note;
+
+  useEffect(() => {
+    const dialog = noteDialog.current;
+    if (!dialog) return;
+    if (editing && !dialog.open) dialog.showModal();
+    if (!editing && dialog.open) dialog.close();
+  }, [editing]);
+
+  function editNote(server: string, value?: string) {
+    setEditing(server);
+    setNote(value || "");
+  }
+
+  async function saveNote() {
+    if (editing && await onUpdateNote(editing, note.trim())) setEditing("");
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -43,6 +68,7 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
             {currentServer ? displayHost(currentServer) : "暂无节点"}
           </div>
           <div className="flex flex-wrap gap-[7px]">
+            {currentServer?.note && <NoteChip note={currentServer.note} />}
             {currentServer && <Chip>{currentServer.hasAuth ? "鉴权已配置" : "无鉴权"}</Chip>}
             <Chip mono>{state.listen || "-"}</Chip>
             <Chip>{state.servers.length} 个节点</Chip>
@@ -82,6 +108,10 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
                       <div className="mt-2 flex flex-wrap gap-[7px]">
                         {isCurrent ? <Chip active>当前</Chip> : server.default ? <Chip>默认</Chip> : <Chip>备用</Chip>}
                         <Chip>{server.hasAuth ? `鉴权：${server.username || "已配置"}` : "无鉴权"}</Chip>
+                        {server.note && <NoteChip note={server.note} />}
+                        <button disabled={busy} onClick={() => editNote(server.raw, server.note)} className="ui-tooltip inline-grid h-6 w-6 flex-none cursor-pointer place-items-center rounded-[7px] border border-[hsl(var(--border))] bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] transition-colors hover:border-[hsl(var(--input))] hover:text-[hsl(var(--foreground))] disabled:cursor-wait disabled:opacity-55" aria-label={server.note ? "修改备注" : "添加备注"} data-tooltip={server.note ? "修改备注" : "添加备注"} type="button">
+                          {server.note ? <IconEdit className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
+                        </button>
                         {isTesting && <Chip warn><span className="animate-pulse">测试中</span></Chip>}
                       </div>
                     </div>
@@ -137,6 +167,25 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
           </div>
         </div>
       </section>
+
+      <dialog
+        ref={noteDialog}
+        aria-labelledby="note-dialog-title"
+        className="m-auto w-[min(420px,calc(100%-32px))] rounded-[14px] border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-0 text-[hsl(var(--foreground))] shadow-[0_20px_60px_rgba(0,0,0,.22)] backdrop:bg-black/40 backdrop:backdrop-blur-[2px]"
+        onCancel={(event) => { event.preventDefault(); setEditing(""); }}
+        onClose={() => setEditing("")}
+        onClick={(event) => { if (event.target === event.currentTarget) setEditing(""); }}
+      >
+        <form className="p-5" onSubmit={(event) => { event.preventDefault(); void saveNote(); }}>
+          <h2 id="note-dialog-title" className="text-[15px] font-semibold">{hasExistingNote ? "修改备注" : "添加备注"}</h2>
+          <div className="mt-1 break-all font-mono text-[12px] text-[hsl(var(--muted-foreground))]">{editing}</div>
+          <input autoFocus maxLength={60} value={note} onChange={(event) => setNote(event.target.value)} placeholder="输入节点备注" className={`${inputClass} mt-4 w-full font-sans`} />
+          <div className="mt-5 flex justify-end gap-2">
+            <button className={topButtonClass} onClick={() => setEditing("")} type="button">取消</button>
+            <button className={`${primaryButtonClass} h-[34px] px-[13px]`} disabled={busy} type="submit">保存备注</button>
+          </div>
+        </form>
+      </dialog>
     </div>
   );
 }

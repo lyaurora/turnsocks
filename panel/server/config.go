@@ -66,6 +66,12 @@ func readProxyConfig(path string) (proxyConfig, error) {
 			}
 		case "TURN_SERVERS":
 			cfg.Servers = splitServers(value)
+		case "TURN_SERVER_NOTES":
+			if value != "" {
+				if err := json.Unmarshal([]byte(value), &cfg.ServerNotes); err != nil {
+					return proxyConfig{}, fmt.Errorf("config.env 第 %d 行 TURN_SERVER_NOTES 格式错误", lineNo+1)
+				}
+			}
 		case "DOH":
 			if value != "" {
 				cfg.DoH = value
@@ -100,12 +106,17 @@ func writeProxyConfig(path string, cfg proxyConfig) error {
 }
 
 func updateProxyConfigText(raw string, cfg proxyConfig) string {
+	notes := []byte("{}")
+	if len(cfg.ServerNotes) > 0 {
+		notes, _ = json.Marshal(cfg.ServerNotes)
+	}
 	values := map[string]string{
-		"LISTEN":         cfg.Listen,
-		"TURN_SERVERS":   strings.Join(cfg.Servers, ","),
-		"DOH":            cfg.DoH,
-		"PANEL_USERNAME": cfg.PanelUsername,
-		"PANEL_PASSWORD": cfg.PanelPassword,
+		"LISTEN":            cfg.Listen,
+		"TURN_SERVERS":      strings.Join(cfg.Servers, ","),
+		"TURN_SERVER_NOTES": string(notes),
+		"DOH":               cfg.DoH,
+		"PANEL_USERNAME":    cfg.PanelUsername,
+		"PANEL_PASSWORD":    cfg.PanelPassword,
 	}
 	required := []string{"LISTEN", "TURN_SERVERS", "DOH"}
 	authKeys := []string{"PANEL_USERNAME", "PANEL_PASSWORD"}
@@ -151,6 +162,9 @@ func updateProxyConfigText(raw string, cfg proxyConfig) string {
 				lines = appendConfigLine(lines, key+"="+values[key])
 			}
 		}
+	}
+	if len(cfg.ServerNotes) > 0 && !written["TURN_SERVER_NOTES"] {
+		lines = appendConfigLine(lines, "TURN_SERVER_NOTES="+values["TURN_SERVER_NOTES"])
 	}
 
 	return strings.Join(lines, "\n") + "\n"
@@ -201,7 +215,7 @@ func parseServer(raw string) (serverInfo, error) {
 	}, nil
 }
 
-func buildServerInfo(servers []string, currentAddr string, tests map[string]serverTestResponse) []serverInfo {
+func buildServerInfo(servers []string, notes map[string]string, currentAddr string, tests map[string]serverTestResponse) []serverInfo {
 	infos := make([]serverInfo, 0, len(servers))
 	for i, server := range servers {
 		info, err := parseServer(server)
@@ -209,6 +223,7 @@ func buildServerInfo(servers []string, currentAddr string, tests map[string]serv
 			info = serverInfo{Raw: server, Addr: server}
 		}
 		info.Default = i == 0
+		info.Note = notes[info.Raw]
 		if test, ok := tests[info.Raw]; ok {
 			t := test
 			info.Test = &t

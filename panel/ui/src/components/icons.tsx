@@ -67,6 +67,15 @@ export function IconTrash({ className = "h-4 w-4" }: IconProps) {
   );
 }
 
+export function IconEdit({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg className={className} {...base} strokeWidth={1.8}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" />
+    </svg>
+  );
+}
+
 export function IconAlert({ className = "h-4 w-4" }: IconProps) {
   return (
     <svg className={className} {...base} strokeWidth={1.9}>

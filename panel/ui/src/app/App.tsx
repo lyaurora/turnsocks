@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { addServer as addServerRequest, deleteServer, getState, restartProxy, selectServer, testServer as testServerRequest, updateConfig as updateConfigRequest } from "../api/client";
+import { addServer as addServerRequest, deleteServer, getState, restartProxy, selectServer, testServer as testServerRequest, updateConfig as updateConfigRequest, updateServerNote } from "../api/client";
 import { IconAlert, IconLogout, IconMonitor, IconMoon, IconRefresh, IconRelay, IconSun, IconTrash } from "../components/icons";
 import { secondaryTopButtonClass, topButtonClass } from "../controlClasses";
 import { NodePanel } from "../features/nodes/NodePanel";
@@ -284,6 +284,7 @@ function App() {
             onTestAll={testAllServers}
             onSelectServer={(server) => void run(() => selectServer(server))}
             onDeleteServer={removeServer}
+            onUpdateNote={(server, note) => run(() => updateServerNote(server, note))}
           />
           <SettingsPanel state={state} config={config} busy={busy} onSubmit={updateConfig} onFieldChange={updateConfigField} />
         </div>

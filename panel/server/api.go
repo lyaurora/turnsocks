@@ -32,7 +32,7 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 		DoH:              cfg.DoH,
 		PanelUsername:    cfg.PanelUsername,
 		PanelAuthEnabled: cfg.PanelUsername != "" && cfg.PanelPassword != "",
-		Servers:          buildServerInfo(cfg.Servers, state.CurrentAddr, tests),
+		Servers:          buildServerInfo(cfg.Servers, cfg.ServerNotes, state.CurrentAddr, tests),
 		Service:          readServiceInfo(),
 	})
 }
@@ -148,6 +148,8 @@ func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg.Servers = servers
+	server, _ := normalizeServer(req.Server)
+	delete(cfg.ServerNotes, server)
 	if err := writeProxyConfig(a.configPath, cfg); err != nil {
 		writeAPIError(w, err)
 		return
@@ -158,6 +160,57 @@ func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, apiResponse{OK: true, Message: "节点已删除"})
+}
+
+func (a *app) handleUpdateServerNote(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	req, err := readServerRequest(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	server, err := normalizeServer(req.Server)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	req.Note = strings.TrimSpace(req.Note)
+	if len([]rune(req.Note)) > 60 {
+		writeAPIError(w, errors.New("备注不能超过 60 个字符"))
+		return
+	}
+	if strings.ContainsAny(req.Note, "\r\n") {
+		writeAPIError(w, errors.New("备注不能包含换行"))
+		return
+	}
+
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+	cfg, err := readProxyConfig(a.configPath)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if !containsServer(cfg.Servers, server) {
+		writeAPIError(w, errors.New("节点不存在"))
+		return
+	}
+	if cfg.ServerNotes == nil {
+		cfg.ServerNotes = make(map[string]string)
+	}
+	if req.Note == "" {
+		delete(cfg.ServerNotes, server)
+	} else {
+		cfg.ServerNotes[server] = req.Note
+	}
+	if err := writeProxyConfig(a.configPath, cfg); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, apiResponse{OK: true, Message: "备注已保存"})
 }
 
 func (a *app) handleRestart(w http.ResponseWriter, r *http.Request) {
