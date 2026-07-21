@@ -48,9 +48,9 @@ ssh -L 10808:127.0.0.1:10808 user@your-vps
 
 浏览器访问 `http://127.0.0.1:10808`。
 
-面板用于添加、删除、切换和测试 TURN 节点，也可修改 SOCKS5 监听地址、DoH 与面板登录凭据。测速结果会保存到本地。
+面板用于添加、删除、切换、备注和测试 TURN 节点，也可修改 SOCKS5 监听地址、DoH 与面板登录凭据。测速结果会保存到本地。
 
-添加或删除节点时，节点池会热加载配置。切换节点以及修改监听地址或 DoH 时，代理服务会重启。测速使用 Cloudflare 下载源，结果用于比较节点基础质量，不代表所有目标站点的速度。
+添加或删除节点时，节点池会热加载配置。修改节点备注不影响代理进程；切换节点以及修改监听地址或 DoH 时，代理服务会重启。测速使用 Cloudflare 下载源，结果用于比较节点基础质量，不代表所有目标站点的速度。
 
 ## 配置
 
@@ -68,6 +68,7 @@ PANEL_PASSWORD=your-panel-password
 | --- | --- |
 | `LISTEN` | SOCKS5 TCP 监听地址 |
 | `TURN_SERVERS` | 以英文逗号分隔的 TURN 节点列表 |
+| `TURN_SERVER_NOTES` | 面板维护的节点备注，无需手动编辑 |
 | `DOH` | `application/dns-message` DoH 接口 |
 | `PANEL_USERNAME` | 面板用户名 |
 | `PANEL_PASSWORD` | 面板密码 |
