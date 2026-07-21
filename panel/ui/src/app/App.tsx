@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { addServer as addServerRequest, deleteServer, getState, restartProxy, selectServer, testServer as testServerRequest, updateConfig as updateConfigRequest } from "../api/client";
-import { IconLogout, IconMonitor, IconMoon, IconRefresh, IconRelay, IconSun } from "../components/icons";
+import { IconAlert, IconLogout, IconMonitor, IconMoon, IconRefresh, IconRelay, IconSun, IconTrash } from "../components/icons";
 import { ghostButtonClass, topButtonClass } from "../controlClasses";
 import { NodePanel } from "../features/nodes/NodePanel";
 import { SettingsPanel } from "../features/settings/SettingsPanel";
@@ -39,11 +39,13 @@ function App() {
   const [testing, setTesting] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState("");
   const settingsDirty = useRef(false);
   const busyRef = useRef(false);
   const testingRef = useRef<Set<string>>(new Set());
   const refreshVersion = useRef(0);
   const toastTimer = useRef<number>();
+  const deleteDialog = useRef<HTMLDialogElement>(null);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -52,6 +54,13 @@ function App() {
   }, []);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+
+  useEffect(() => {
+    const dialog = deleteDialog.current;
+    if (!dialog) return;
+    if (deleteTarget && !dialog.open) dialog.showModal();
+    if (!deleteTarget && dialog.open) dialog.close();
+  }, [deleteTarget]);
 
   const refresh = useCallback(async () => {
     const version = ++refreshVersion.current;
@@ -203,9 +212,13 @@ function App() {
   }
 
   function removeServer(server: string) {
-    if (window.confirm("确定要删除此节点吗？")) {
-      void run(() => deleteServer(server));
-    }
+    setDeleteTarget(server);
+  }
+
+  function confirmRemoveServer() {
+    const server = deleteTarget;
+    setDeleteTarget("");
+    if (server) void run(() => deleteServer(server));
   }
 
   const locked = busy || testing.size > 0;
@@ -277,6 +290,45 @@ function App() {
       <div className={`pointer-events-none fixed bottom-5 left-1/2 z-50 max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 rounded-[11px] border border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 px-4 py-3 text-[13px] font-medium text-[hsl(var(--foreground))] shadow-[0_8px_30px_rgba(0,0,0,.12)] transition-all ${toast ? "opacity-100" : "opacity-0"}`}>
         {toast}
       </div>
+
+      <dialog
+        ref={deleteDialog}
+        aria-describedby="delete-node-description"
+        aria-labelledby="delete-node-title"
+        className="m-auto w-[min(420px,calc(100%-32px))] rounded-[14px] border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-0 text-[hsl(var(--foreground))] shadow-[0_20px_60px_rgba(0,0,0,.22)] backdrop:bg-black/40 backdrop:backdrop-blur-[2px]"
+        onCancel={(event) => {
+          event.preventDefault();
+          setDeleteTarget("");
+        }}
+        onClose={() => setDeleteTarget("")}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) setDeleteTarget("");
+        }}
+      >
+        <div className="p-5">
+          <div className="flex items-start gap-3">
+            <div className="grid h-9 w-9 flex-none place-items-center rounded-[10px] bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]">
+              <IconAlert className="h-[17px] w-[17px]" />
+            </div>
+            <div className="min-w-0 pt-0.5">
+              <h2 id="delete-node-title" className="text-[15px] font-semibold">删除节点</h2>
+              <p id="delete-node-description" className="mt-1 text-[13px] leading-5 text-[hsl(var(--muted-foreground))]">确定从节点列表中删除此节点？</p>
+            </div>
+          </div>
+
+          <div className="mt-4 break-all rounded-[9px] border border-[hsl(var(--border))] bg-[hsl(var(--muted))] px-3 py-2.5 font-mono text-[12.5px] leading-5">
+            {deleteTarget}
+          </div>
+
+          <div className="mt-5 flex justify-end gap-2">
+            <button className={topButtonClass} onClick={() => setDeleteTarget("")} type="button">取消</button>
+            <button className="inline-flex h-[34px] cursor-pointer items-center justify-center gap-1.5 rounded-[9px] border border-[hsl(var(--danger))]/20 bg-[hsl(var(--danger))]/10 px-[13px] text-[13px] font-medium leading-none text-[hsl(var(--danger))] transition-colors hover:bg-[hsl(var(--danger))]/15" onClick={confirmRemoveServer} type="button">
+              <IconTrash className="h-3.5 w-3.5" />
+              删除节点
+            </button>
+          </div>
+        </div>
+      </dialog>
     </div>
   );
 }
