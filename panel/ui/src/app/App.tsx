@@ -318,11 +318,11 @@ function App() {
         }}
       >
         <div className="p-5">
-          <div className="flex items-start gap-3">
+          <div className="flex items-center gap-3">
             <div className="grid h-9 w-9 flex-none place-items-center rounded-[10px] bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]">
               <IconAlert className="h-[17px] w-[17px]" />
             </div>
-            <div className="min-w-0 pt-0.5">
+            <div className="min-w-0">
               <h2 id="delete-node-title" className="text-[15px] font-semibold">删除节点</h2>
               <p id="delete-node-description" className="mt-1 text-[13px] leading-5 text-[hsl(var(--muted-foreground))]">确定从节点列表中删除此节点？</p>
             </div>
