@@ -38,6 +38,7 @@ function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => (localStorage.getItem("turnsocks-theme") as ThemeMode) || "system");
   const [testing, setTesting] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState("");
   const [deleteTarget, setDeleteTarget] = useState("");
   const settingsDirty = useRef(false);
@@ -67,6 +68,7 @@ function App() {
     const next = await getState();
     if (version !== refreshVersion.current) return next;
     setState(next);
+    setLoaded(true);
     if (!settingsDirty.current) {
       setConfig({
         listen: next.listen || "",
@@ -260,7 +262,7 @@ function App() {
                 const Icon = mode === "light" ? IconSun : mode === "system" ? IconMonitor : IconMoon;
                 const label = mode === "light" ? "浅色" : mode === "system" ? "跟随系统" : "深色";
                 return (
-                  <button key={mode} aria-label={label} aria-pressed={theme === mode} title={label} onClick={(event) => changeTheme(mode, event.currentTarget)} className={`grid h-[26px] w-[30px] cursor-pointer place-items-center rounded-full transition-colors ${theme === mode ? "bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]" : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`} type="button">
+                  <button key={mode} aria-label={label} aria-pressed={theme === mode} data-tooltip={label} onClick={(event) => changeTheme(mode, event.currentTarget)} className={`ui-tooltip grid h-[26px] w-[30px] cursor-pointer place-items-center rounded-full transition-colors ${theme === mode ? "bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]" : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`} type="button">
                     <Icon className="h-3.5 w-3.5" />
                   </button>
                 );
@@ -287,7 +289,16 @@ function App() {
         </div>
       </div>
 
-      <div className={`pointer-events-none fixed bottom-5 left-1/2 z-50 max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 rounded-[11px] border border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 px-4 py-3 text-[13px] font-medium text-[hsl(var(--foreground))] shadow-[0_8px_30px_rgba(0,0,0,.12)] transition-all ${toast ? "opacity-100" : "opacity-0"}`}>
+      {!loaded && (
+        <div className="fixed inset-0 z-40 grid place-items-center bg-[hsl(var(--background))]">
+          <div className="flex items-center gap-2.5 text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-[hsl(var(--border))] border-t-[hsl(var(--primary))] motion-reduce:animate-none" />
+            正在加载面板
+          </div>
+        </div>
+      )}
+
+      <div aria-atomic="true" aria-live="polite" role="status" className={`pointer-events-none fixed bottom-5 left-1/2 z-50 max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 rounded-[11px] border border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 px-4 py-3 text-[13px] font-medium text-[hsl(var(--foreground))] shadow-[0_8px_30px_rgba(0,0,0,.12)] transition-all ${toast ? "opacity-100" : "opacity-0"}`}>
         {toast}
       </div>
 

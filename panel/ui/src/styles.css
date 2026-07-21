@@ -110,6 +110,49 @@ input {
 }
 
 @layer components {
+  .ui-tooltip {
+    position: relative;
+  }
+
+  .ui-tooltip::after {
+    position: absolute;
+    top: calc(100% + 7px);
+    left: 50%;
+    z-index: 70;
+    padding: 5px 7px;
+    border-radius: 6px;
+    background: hsl(var(--foreground));
+    color: hsl(var(--background));
+    box-shadow: 0 4px 12px rgba(0, 0, 0, .14);
+    content: attr(data-tooltip);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, -2px);
+    transition: opacity .12s ease, transform .12s ease;
+    white-space: nowrap;
+  }
+
+  .ui-tooltip[data-tooltip-side="top"]::after {
+    top: auto;
+    bottom: calc(100% + 7px);
+    transform: translate(-50%, 2px);
+  }
+
+  .ui-tooltip:focus-visible::after {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+
+  @media (hover: hover) {
+    .ui-tooltip:hover::after {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+  }
+
   .shell-window {
     border-radius: 14px;
     border: 1px solid hsl(var(--border));

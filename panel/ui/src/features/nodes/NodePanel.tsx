@@ -90,7 +90,7 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
                       {!isCurrent && (
                         <button disabled={busy} onClick={() => onSelectServer(server.raw)} className={softButtonClass} type="button">切换</button>
                       )}
-                      <button disabled={busy} onClick={() => onDeleteServer(server.raw)} className={iconDangerButtonClass} aria-label="删除" title="删除" type="button">
+                      <button disabled={busy} onClick={() => onDeleteServer(server.raw)} className={`${iconDangerButtonClass} ui-tooltip`} aria-label="删除" data-tooltip="删除" data-tooltip-side="top" type="button">
                         <IconTrash className="h-4 w-4" />
                       </button>
                     </div>
