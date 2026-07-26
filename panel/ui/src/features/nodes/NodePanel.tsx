@@ -156,7 +156,7 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
                         <button disabled={busy} onClick={() => editNote(server.raw, server.note)} className="ui-tooltip inline-grid h-6 w-7 flex-none cursor-pointer place-items-center rounded-[7px] border border-[hsl(var(--border))] bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] transition-colors before:absolute before:-inset-2.5 hover:border-[hsl(var(--input))] hover:text-[hsl(var(--foreground))] disabled:cursor-wait disabled:opacity-55" aria-label={server.note ? "修改备注" : "添加备注"} data-tooltip={server.note ? "修改备注" : "添加备注"} type="button">
                           {server.note ? <IconEdit className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
                         </button>
-                        {isTesting && <Chip warn><span className="animate-pulse">测试中</span></Chip>}
+                        {isTesting && <Chip warn><span className="animate-pulse motion-reduce:animate-none">测试中</span></Chip>}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-[7px] sm:justify-end">
@@ -164,7 +164,7 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
                       {!isCurrent && (
                         <button disabled={busy} onClick={() => onSelectServer(server.raw)} className={softButtonClass} type="button">切换</button>
                       )}
-                      <button disabled={busy} onClick={() => onDeleteServer(server.raw)} className={`${iconDangerButtonClass} ui-tooltip`} aria-label="删除" data-tooltip="删除" data-tooltip-side="top" type="button">
+                      <button disabled={busy || isTesting} onClick={() => onDeleteServer(server.raw)} className={`${iconDangerButtonClass} ui-tooltip`} aria-label="删除" data-tooltip="删除" data-tooltip-side="top" type="button">
                         <IconTrash className="h-4 w-4" />
                       </button>
                     </div>
