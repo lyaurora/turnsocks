@@ -7,7 +7,7 @@ export function Chip({ children, active, accent, warn, danger, mono }: { childre
   if (warn) colorClass = "border-transparent bg-[hsl(var(--warn))]/12 text-[hsl(var(--warn))]";
   if (danger) colorClass = "border-transparent bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]";
   return (
-    <span className={`inline-flex min-h-[24px] items-center gap-1.5 whitespace-nowrap rounded-[7px] border px-2 leading-none ${mono ? "font-mono text-[11.5px]" : "text-[12px] font-medium"} ${colorClass}`}>
+    <span className={`inline-flex min-h-[24px] items-center gap-1.5 whitespace-nowrap rounded-[7px] border px-2 leading-none ${mono ? "font-mono text-[11px]" : "text-[12px] font-medium"} ${colorClass}`}>
       {active && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
       {children}
     </span>

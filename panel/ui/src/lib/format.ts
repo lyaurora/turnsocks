@@ -1,7 +1,7 @@
 import type { ServerInfo } from "../types/panel";
 
 export const ms = (value?: number) => Number.isFinite(value) ? `${value!.toFixed(1)}ms` : "-";
-export const mbps = (value?: number) => Number.isFinite(value) ? `${value!.toFixed(1)}M` : "-";
+export const mbps = (value?: number) => Number.isFinite(value) ? value!.toFixed(1) : "-";
 
 export function formatTestTime(value?: string) {
   if (!value) return "";

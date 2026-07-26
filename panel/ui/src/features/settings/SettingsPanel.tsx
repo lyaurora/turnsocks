@@ -20,9 +20,21 @@ export function SettingsPanel({ state, config, busy, onSubmit, onFieldChange }: 
           <h2 className="text-[14.5px] font-semibold text-[hsl(var(--foreground))]">概览</h2>
           <Chip mono>PID {state.service.pid || "-"}</Chip>
         </div>
-        <div className="grid gap-1.5 p-4 md:p-[18px]">
-          <div className="text-[12.5px] font-medium text-[hsl(var(--muted-foreground))]">DoH</div>
-          <div className="break-all font-mono text-[13px] leading-[1.55] text-[hsl(var(--foreground))]">{state.doh || "-"}</div>
+        <div className="grid gap-3.5 p-4 md:p-[18px]">
+          <div className="grid grid-cols-2 gap-3.5">
+            <div className="grid gap-1.5">
+              <div className="text-[12px] font-medium text-[hsl(var(--muted-foreground))]">SOCKS5 监听</div>
+              <div className="break-all font-mono text-[13px] leading-[1.55] text-[hsl(var(--foreground))]">{state.listen || "-"}</div>
+            </div>
+            <div className="grid gap-1.5">
+              <div className="text-[12px] font-medium text-[hsl(var(--muted-foreground))]">节点数</div>
+              <div className="font-mono text-[13px] leading-[1.55] text-[hsl(var(--foreground))]">{state.servers.length}</div>
+            </div>
+          </div>
+          <div className="grid gap-1.5">
+            <div className="text-[12px] font-medium text-[hsl(var(--muted-foreground))]">DoH</div>
+            <div className="break-all font-mono text-[13px] leading-[1.55] text-[hsl(var(--foreground))]">{state.doh || "-"}</div>
+          </div>
         </div>
       </section>
 

@@ -228,7 +228,7 @@ function App() {
   return (
     <div className="min-h-screen p-4 pb-12 md:p-6">
       <div className="relative z-10 mx-auto max-w-[1180px]">
-        <header className="mb-6 flex flex-col justify-between gap-4 md:mb-7 lg:flex-row lg:items-center">
+        <header className="mb-6 flex flex-col justify-between gap-4 md:mb-7 md:flex-row md:items-center">
           <div className="flex items-center gap-3">
             <div className="brand-mark h-8 w-8">
               <IconRelay className="h-[17px] w-[17px]" />
@@ -271,7 +271,7 @@ function App() {
           </div>
         </header>
 
-        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
           <NodePanel
             state={state}
             serverInput={serverInput}
@@ -324,12 +324,12 @@ function App() {
               <IconAlert className="h-[17px] w-[17px]" />
             </div>
             <div className="min-w-0">
-              <h2 id="delete-node-title" className="text-[15px] font-semibold">删除节点</h2>
+              <h2 id="delete-node-title" className="text-[14.5px] font-semibold">删除节点</h2>
               <p id="delete-node-description" className="mt-1 text-[13px] leading-5 text-[hsl(var(--muted-foreground))]">确定从节点列表中删除此节点？</p>
             </div>
           </div>
 
-          <div className="mt-4 break-all rounded-[9px] border border-[hsl(var(--border))] bg-[hsl(var(--muted))] px-3 py-2.5 font-mono text-[12.5px] leading-5">
+          <div className="mt-4 break-all rounded-[9px] border border-[hsl(var(--border))] bg-[hsl(var(--muted))] px-3 py-2.5 font-mono text-[12px] leading-5">
             {deleteTarget}
           </div>
 
