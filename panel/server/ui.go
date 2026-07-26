@@ -56,32 +56,46 @@ const loginHTML = `<!doctype html>
     })();
   </script>
   <style>
+    /* tokens:sync-start -- generated from panel/ui/src/styles.css, do not edit by hand */
     :root {
       color-scheme: light;
       --background: 240 7% 97%;
       --foreground: 240 6% 10%;
       --card: 0 0% 100%;
+      --muted: 240 5% 96%;
       --muted-foreground: 240 4% 46%;
       --primary: 239 82% 62%;
       --primary-hover: 243 75% 55%;
       --primary-foreground: 0 0% 100%;
       --border: 240 6% 90%;
       --input: 240 5% 84%;
+      --ring: 239 82% 62%;
+      --warn: 32 95% 36%;
       --danger: 0 72% 51%;
+      --ok: 142 72% 30%;
+      --brand-glow: 239 84% 67%;
+      --brand-gradient: linear-gradient(135deg, hsl(239 84% 67%), hsl(258 90% 66%));
     }
     .dark {
       color-scheme: dark;
       --background: 240 9% 4%;
       --foreground: 240 5% 96%;
       --card: 240 7% 8%;
+      --muted: 240 8% 12%;
       --muted-foreground: 240 5% 65%;
       --primary: 234 89% 74%;
       --primary-hover: 231 92% 80%;
       --primary-foreground: 240 9% 8%;
       --border: 240 6% 16%;
       --input: 240 6% 23%;
+      --ring: 234 89% 74%;
+      --warn: 45 96% 56%;
       --danger: 0 91% 71%;
+      --ok: 142 69% 58%;
+      --brand-glow: 239 84% 67%;
+      --brand-gradient: linear-gradient(135deg, hsl(239 84% 67%), hsl(258 90% 66%));
     }
+    /* tokens:sync-end */
     * { box-sizing: border-box; }
     body {
       min-height: 100vh;
@@ -90,7 +104,8 @@ const loginHTML = `<!doctype html>
       place-items: center;
       padding: 24px;
       background-color: hsl(var(--background));
-      background-image: radial-gradient(700px at 50% -180px, hsl(var(--primary) / .08), transparent 70%);
+      background-image: radial-gradient(900px at 50% -300px, hsl(var(--primary) / 0.07), transparent 70%);
+      background-attachment: fixed;
       color: hsl(var(--foreground));
       font-family: Inter, "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
       -webkit-font-smoothing: antialiased;
@@ -116,22 +131,22 @@ const loginHTML = `<!doctype html>
       width: 32px;
       height: 32px;
       border-radius: 9px;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      background: var(--brand-gradient);
       color: #fff;
-      box-shadow: 0 2px 8px rgba(99,102,241,.35);
+      box-shadow: 0 2px 8px hsl(var(--brand-glow) / 0.35);
     }
     .mark svg { width: 17px; height: 17px; }
     h1 {
       margin: 0;
-      font-size: 18px;
+      font-size: 17px;
       line-height: 1;
-      font-weight: 650;
+      font-weight: 600;
       letter-spacing: 0;
     }
     p {
       margin: 0 0 18px;
       color: hsl(var(--muted-foreground));
-      font-size: 13.5px;
+      font-size: 13px;
     }
     label {
       display: grid;
@@ -139,7 +154,7 @@ const loginHTML = `<!doctype html>
       margin-top: 13px;
       color: hsl(var(--foreground));
       font-size: 12.5px;
-      font-weight: 550;
+      font-weight: 500;
     }
     input {
       width: 100%;
@@ -150,7 +165,8 @@ const loginHTML = `<!doctype html>
       color: hsl(var(--foreground));
       outline: none;
       padding: 0 12px;
-      font-size: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 13px;
       transition: border-color .15s, box-shadow .15s;
     }
     input:focus {
@@ -166,16 +182,20 @@ const loginHTML = `<!doctype html>
       background: hsl(var(--primary));
       color: hsl(var(--primary-foreground));
       cursor: pointer;
-      font-size: 14px;
-      font-weight: 600;
+      font-size: 13px;
+      font-weight: 500;
       font-family: inherit;
       box-shadow: 0 1px 2px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.14);
       transition: background .15s;
     }
     button:hover { background: hsl(var(--primary-hover)); }
+    button:focus-visible {
+      outline: 2px solid hsl(var(--ring) / 0.8);
+      outline-offset: 2px;
+    }
     .error {
       margin: 0 0 4px;
-      border-radius: 10px;
+      border-radius: 9px;
       background: hsl(var(--danger) / .08);
       color: hsl(var(--danger));
       padding: 10px 12px;

@@ -39,7 +39,7 @@ function App() {
   const [testing, setTesting] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<{ message: string; tone: "info" | "danger" }>({ message: "", tone: "info" });
   const [deleteTarget, setDeleteTarget] = useState("");
   const settingsDirty = useRef(false);
   const busyRef = useRef(false);
@@ -48,10 +48,10 @@ function App() {
   const toastTimer = useRef<number>();
   const deleteDialog = useRef<HTMLDialogElement>(null);
 
-  const showToast = useCallback((message: string) => {
-    setToast(message);
+  const showToast = useCallback((message: string, tone: "info" | "danger" = "info") => {
+    setToast({ message, tone });
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(""), 2200);
+    toastTimer.current = window.setTimeout(() => setToast((prev) => ({ ...prev, message: "" })), 2200);
   }, []);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
@@ -82,7 +82,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    refresh().catch((err) => showToast(errorMessage(err)));
+    refresh().catch((err) => showToast(errorMessage(err), "danger"));
   }, [refresh, showToast]);
 
   useEffect(() => {
@@ -130,7 +130,7 @@ function App() {
       if (refreshAfter) await refresh();
       return true;
     } catch (err) {
-      showToast(errorMessage(err));
+      showToast(errorMessage(err), "danger");
       return false;
     } finally {
       busyRef.current = false;
@@ -142,7 +142,7 @@ function App() {
     event.preventDefault();
     const server = serverInput.trim();
     if (!server) {
-      showToast("节点不能为空");
+      showToast("节点不能为空", "danger");
       return;
     }
     await run(async () => {
@@ -171,7 +171,7 @@ function App() {
         ...prev,
         servers: prev.servers.map((item) => item.raw === server ? { ...item, test: { ok: false, message: errorMessage(err), testedAt: new Date().toISOString() } } : item)
       }));
-      showToast(errorMessage(err));
+      showToast(errorMessage(err), "danger");
     } finally {
       const next = new Set(testingRef.current);
       next.delete(server);
@@ -230,7 +230,7 @@ function App() {
       <div className="relative z-10 mx-auto max-w-[1180px]">
         <header className="mb-6 flex flex-col justify-between gap-4 md:mb-7 lg:flex-row lg:items-center">
           <div className="flex items-center gap-3">
-            <div className="grid h-8 w-8 flex-none place-items-center rounded-[9px] bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(99,102,241,0.35)]">
+            <div className="brand-mark h-8 w-8">
               <IconRelay className="h-[17px] w-[17px]" />
             </div>
             <h1 className="text-[17px] font-semibold leading-none text-[hsl(var(--foreground))]">turnsocks</h1>
@@ -299,8 +299,9 @@ function App() {
         </div>
       )}
 
-      <div aria-atomic="true" aria-live="polite" role="status" className={`pointer-events-none fixed bottom-5 left-1/2 z-50 max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 px-4 py-3 text-[13px] font-medium text-[hsl(var(--foreground))] shadow-[0_8px_30px_rgba(0,0,0,.12)] transition-all ${toast ? "opacity-100" : "opacity-0"}`}>
-        {toast}
+      <div aria-atomic="true" aria-live="polite" role="status" className={`pointer-events-none fixed bottom-5 left-1/2 z-50 flex max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 items-center gap-2.5 rounded-[12px] border px-4 py-3 text-[13px] font-medium shadow-[0_8px_30px_rgba(0,0,0,.12)] transition-all ${toast.message ? "opacity-100" : "opacity-0"} ${toast.tone === "danger" ? "border-[hsl(var(--danger))]/30 bg-[hsl(var(--card))]/95 text-[hsl(var(--danger))]" : "border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 text-[hsl(var(--foreground))]"}`}>
+        {toast.tone === "danger" && <IconAlert className="h-[15px] w-[15px] flex-none" />}
+        <span className="min-w-0 break-words">{toast.message}</span>
       </div>
 
       <dialog
@@ -319,7 +320,7 @@ function App() {
       >
         <div className="p-5">
           <div className="flex items-center gap-3">
-            <div className="grid h-9 w-9 flex-none place-items-center rounded-[10px] bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]">
+            <div className="grid h-9 w-9 flex-none place-items-center rounded-[9px] bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]">
               <IconAlert className="h-[17px] w-[17px]" />
             </div>
             <div className="min-w-0">

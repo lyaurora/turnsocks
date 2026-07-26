@@ -32,7 +32,11 @@ function latencyTone(avgMs?: number) {
 }
 
 function NoteChip({ note }: { note: string }) {
-  return <Chip accent><span className="block max-w-[180px] truncate sm:max-w-[260px]" title={note}>{note}</span></Chip>;
+  return (
+    <span className="ui-tooltip inline-flex min-w-0" data-tooltip={note} tabIndex={0}>
+      <Chip accent><span className="block max-w-[180px] truncate sm:max-w-[260px]">{note}</span></Chip>
+    </span>
+  );
 }
 
 export function NodePanel({ state, serverInput, testing, busy, locked, onServerInput, onAddServer, onTestServer, onTestAll, onSelectServer, onDeleteServer, onUpdateNote }: Props) {
@@ -126,9 +130,9 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
                     </div>
                   </div>
 
-                  {test && !isTesting && (
+                  {test && (
                     test.ok ? (
-                      <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-3 border-t border-[hsl(var(--border))] pt-3 sm:grid-cols-3 xl:grid-cols-5">
+                      <div className={`mt-3 grid grid-cols-2 gap-x-5 gap-y-3 border-t border-[hsl(var(--border))] pt-3 transition-opacity sm:grid-cols-3 xl:grid-cols-5 ${isTesting ? "opacity-45" : ""}`}>
                         <div className="min-w-0">
                           <div className="mb-1 text-[11px] text-[hsl(var(--muted-foreground))]">TCP 延迟</div>
                           <div className={`font-mono text-[13px] font-semibold ${test.tcpConnect?.ok ? toneText[tcpTone] : "text-[hsl(var(--danger))]"}`}>{test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"}</div>
@@ -151,7 +155,7 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
                         </div>
                       </div>
                     ) : (
-                      <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-[10px] bg-[hsl(var(--danger))]/[0.08] px-3 py-2.5 text-[hsl(var(--danger))]">
+                      <div className={`mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-[9px] bg-[hsl(var(--danger))]/[0.08] px-3 py-2.5 text-[hsl(var(--danger))] transition-opacity ${isTesting ? "opacity-45" : ""}`}>
                         <IconAlert className="h-[15px] w-[15px] flex-none" />
                         <span className="min-w-0 break-all text-[12.5px] font-medium">{test.message || "测试失败"}</span>
                         <span className="ml-auto whitespace-nowrap font-mono text-[11.5px] opacity-70">{formatTestTime(test.testedAt)}</span>
