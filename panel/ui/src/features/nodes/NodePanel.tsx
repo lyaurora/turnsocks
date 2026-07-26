@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Chip } from "../../components/Chip";
 import { IconAlert, IconEdit, IconPlus, IconTrash, IconZap } from "../../components/icons";
 import { iconDangerButtonClass, inputClass, primaryButtonClass, smallButtonClass, softButtonClass, topButtonClass } from "../../controlClasses";
-import { displayHost, formatTestTime, mbps, ms } from "../../lib/format";
+import { displayHost, displayPort, formatTestTime, mbps, ms } from "../../lib/format";
 import type { PanelState, ServerTest } from "../../types/panel";
 
 type Props = {
@@ -103,12 +103,21 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
         <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(460px at 94% -60%, hsl(var(--primary) / 0.08), transparent 65%)" }} />
         <div className="relative">
           <div className="text-[12px] font-medium text-[hsl(var(--muted-foreground))]">当前 TURN 节点</div>
-          <div className="mb-4 mt-1.5 break-all font-mono text-[24px] font-semibold leading-[1.2] text-[hsl(var(--foreground))] sm:text-[28px] md:text-[30px]">
-            {currentServer ? displayHost(currentServer) : "暂无节点"}
+          <div className="mb-3 mt-1.5 break-all font-mono text-[24px] font-semibold leading-[1.2] text-[hsl(var(--foreground))] sm:text-[28px] md:text-[30px]">
+            {currentServer ? (
+              <>
+                {displayHost(currentServer)}
+                {displayPort(currentServer) && <span className="text-[0.6em] font-medium text-[hsl(var(--muted-foreground))]">:{displayPort(currentServer)}</span>}
+              </>
+            ) : "暂无节点"}
           </div>
-          {currentServer?.note && (
+          {currentServer && (
             <div className="mb-4 flex flex-wrap gap-[7px]">
-              <NoteChip note={currentServer.note} />
+              {currentServer.current && (state.service.active
+                ? <Chip active>正在使用</Chip>
+                : <Chip warn>代理已停止</Chip>)}
+              <Chip>{currentServer.hasAuth ? `鉴权：${currentServer.username || "已配置"}` : "无鉴权"}</Chip>
+              {currentServer.note && <NoteChip note={currentServer.note} />}
             </div>
           )}
           {currentServer?.test ? (

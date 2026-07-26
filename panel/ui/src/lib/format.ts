@@ -22,6 +22,15 @@ export function displayHost(node?: ServerInfo) {
   return idx > 0 ? addr.slice(0, idx) : addr;
 }
 
+export function displayPort(node?: ServerInfo) {
+  if (!node) return "";
+  const addr = node.addr || node.raw || "";
+  const end = addr.startsWith("[") ? addr.indexOf("]") : -1;
+  const idx = addr.lastIndexOf(":");
+  if (idx > end && idx > 0 && idx < addr.length - 1) return addr.slice(idx + 1);
+  return "";
+}
+
 export function errorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message === "Failed to fetch" ? "无法连接面板" : error.message;
