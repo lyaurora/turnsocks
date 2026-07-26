@@ -59,7 +59,7 @@ const loginHTML = `<!doctype html>
     /* tokens:sync-start -- generated from panel/ui/src/styles.css, do not edit by hand */
     :root {
       color-scheme: light;
-      --background: 240 7% 97%;
+      --background: 240 8% 94%;
       --foreground: 240 6% 10%;
       --card: 0 0% 100%;
       --muted: 240 5% 96%;
@@ -67,7 +67,7 @@ const loginHTML = `<!doctype html>
       --primary: 239 82% 62%;
       --primary-hover: 243 75% 55%;
       --primary-foreground: 0 0% 100%;
-      --border: 240 6% 90%;
+      --border: 240 6% 88%;
       --input: 240 5% 84%;
       --ring: 239 82% 62%;
       --warn: 32 95% 36%;
