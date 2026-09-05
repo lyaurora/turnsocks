@@ -19,8 +19,6 @@ func measureDownloadSpeed(ctx context.Context, proxyAddr string, threads int, by
 	if threads <= 0 {
 		threads = 1
 	}
-	result := Speed{Threads: threads}
-	result.Source = testDownloadSourceName
 	start := time.Now()
 	type partResult struct {
 		bytes int64
@@ -35,40 +33,33 @@ func measureDownloadSpeed(ctx context.Context, proxyAddr string, threads int, by
 	}
 
 	var total int64
-	var failed []string
+	var firstErr error
 	for i := 0; i < threads; i++ {
 		part := <-ch
 		total += part.bytes
-		if part.err != nil {
-			failed = append(failed, part.err.Error())
+		if firstErr == nil {
+			firstErr = part.err
 		}
 	}
-	seconds := time.Since(start).Seconds()
-	result.Bytes = total
-	result.Seconds = round2(seconds)
+	return speedFromDownload(total, int64(threads)*bytesEach, time.Since(start), threads, firstErr)
+}
+
+func speedFromDownload(total, expected int64, elapsed time.Duration, threads int, downloadErr error) Speed {
+	seconds := elapsed.Seconds()
+	result := Speed{Bytes: total, Seconds: round2(seconds), Threads: threads, Source: testDownloadSourceName}
 	if total > 0 && seconds > 0 {
 		result.Mbps = round2(float64(total) * 8 / seconds / 1_000_000)
 	}
-	expected := int64(threads) * bytesEach
-	if total < expected*90/100 {
-		if len(failed) > 0 {
-			result.Message = failed[0]
-		} else {
-			result.Message = fmt.Sprintf("下载数据不足：%.1fMB / %.1fMB", float64(total)/1024/1024, float64(expected)/1024/1024)
-		}
+	if downloadErr != nil {
+		result.Message = "下载异常：" + downloadErr.Error()
 		return result
 	}
-	if len(failed) > 0 {
-		if total < expected*95/100 {
-			result.Message = fmt.Sprintf("部分完成 %.2f Mbps", result.Mbps)
-		}
-	} else if total < expected*95/100 {
-		result.Message = fmt.Sprintf("部分完成 %.2f Mbps", result.Mbps)
+	if total != expected {
+		result.Message = fmt.Sprintf("下载不完整：%d / %d 字节", total, expected)
+		return result
 	}
 	result.OK = true
-	if result.Message == "" {
-		result.Message = fmt.Sprintf("%.2f Mbps", result.Mbps)
-	}
+	result.Message = fmt.Sprintf("%.2f Mbps", result.Mbps)
 	return result
 }
 

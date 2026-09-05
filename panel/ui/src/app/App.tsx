@@ -165,7 +165,7 @@ function App() {
         ...prev,
         servers: prev.servers.map((item) => item.raw === server ? { ...item, test: result } : item)
       }));
-      showToast(result.message || "测试完成");
+      showToast(result.message || "测试完成", result.ok ? "info" : "danger");
     } catch (err) {
       setState((prev) => ({
         ...prev,

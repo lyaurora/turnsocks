@@ -43,15 +43,30 @@ function Metric({ label, value, unit, valueClass = "text-[13px] font-semibold te
   );
 }
 
-function TestMetrics({ test, dim }: { test: ServerTest; dim?: boolean }) {
+function TestResults({ test, dim }: { test: ServerTest; dim?: boolean }) {
+  const hasDownload = (test.singleThread?.bytes || 0) > 0 || (test.multiThread?.bytes || 0) > 0;
+  if (!test.ok && !hasDownload) return <TestFailure test={test} dim={dim} />;
   const tcpTone = test.tcpConnect?.ok ? latencyTone(test.tcpConnect.avgMs) : "danger";
   return (
-    <div className={`grid grid-cols-2 gap-x-5 gap-y-3 transition-opacity sm:grid-cols-3 xl:grid-cols-5 ${dim ? "opacity-45" : ""}`}>
-      <Metric label="TCP 延迟" value={test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"} valueClass={`text-[13px] font-semibold ${test.tcpConnect?.ok ? toneText[tcpTone] : "text-[hsl(var(--danger))]"}`} />
-      <Metric label="UDP 转发" value={test.socksUdp?.ok ? "可用" : "失败"} valueClass={`text-[13px] font-semibold ${test.socksUdp?.ok ? "text-[hsl(var(--ok))]" : "text-[hsl(var(--danger))]"}`} />
-      <Metric label="单线程" value={test.singleThread?.ok ? mbps(test.singleThread.mbps) : "失败"} unit={test.singleThread?.ok ? "Mbps" : undefined} valueClass={test.singleThread?.ok ? undefined : "text-[13px] font-semibold text-[hsl(var(--danger))]"} />
-      <Metric label="多线程" value={test.multiThread?.ok ? mbps(test.multiThread.mbps) : "失败"} unit={test.multiThread?.ok ? "Mbps" : undefined} valueClass={test.multiThread?.ok ? undefined : "text-[13px] font-semibold text-[hsl(var(--danger))]"} />
-      <Metric label="测试时间" value={formatTestTime(test.testedAt)} valueClass="whitespace-nowrap text-[12px] text-[hsl(var(--foreground))]" />
+    <div className={`space-y-3 transition-opacity ${dim ? "opacity-45" : ""}`}>
+      <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 xl:grid-cols-5">
+        <Metric label="TCP 延迟" value={test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"} valueClass={`text-[13px] font-semibold ${test.tcpConnect?.ok ? toneText[tcpTone] : "text-[hsl(var(--danger))]"}`} />
+        <Metric label="UDP 转发" value={test.socksUdp?.ok ? "可用" : "失败"} valueClass={`text-[13px] font-semibold ${test.socksUdp?.ok ? "text-[hsl(var(--ok))]" : "text-[hsl(var(--danger))]"}`} />
+        {[
+          { label: "单线程", speed: test.singleThread },
+          { label: "多线程", speed: test.multiThread }
+        ].map(({ label, speed }) => {
+          const measured = speed?.ok || (speed?.bytes || 0) > 0;
+          const incomplete = measured && !speed?.ok;
+          return (
+            <div key={label} className="min-w-0" title={speed?.message}>
+              <Metric label={incomplete ? `${label}（未完成）` : label} value={measured ? mbps(speed?.mbps) : "失败"} unit={measured ? "Mbps" : undefined} valueClass={speed?.ok ? undefined : `text-[13px] font-semibold ${toneText[incomplete ? "warn" : "danger"]}`} />
+            </div>
+          );
+        })}
+        <Metric label="测试时间" value={formatTestTime(test.testedAt)} valueClass="whitespace-nowrap text-[12px] text-[hsl(var(--foreground))]" />
+      </div>
+      {!test.ok && <TestFailure test={test} />}
     </div>
   );
 }
@@ -121,9 +136,7 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
             </div>
           )}
           {currentServer?.test ? (
-            currentServer.test.ok
-              ? <TestMetrics test={currentServer.test} dim={testing.has(currentServer.raw)} />
-              : <TestFailure test={currentServer.test} dim={testing.has(currentServer.raw)} />
+            <TestResults test={currentServer.test} dim={testing.has(currentServer.raw)} />
           ) : currentServer ? (
             <div className="text-[12px] text-[hsl(var(--muted-foreground))]">尚未测速，点击下方“测试”查看节点质量</div>
           ) : null}
@@ -181,7 +194,7 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
 
                   <div className="mt-3 border-t border-[hsl(var(--border))] pt-3">
                     {test ? (
-                      test.ok ? <TestMetrics test={test} dim={isTesting} /> : <TestFailure test={test} dim={isTesting} />
+                      <TestResults test={test} dim={isTesting} />
                     ) : (
                       <div className="text-[12px] text-[hsl(var(--muted-foreground))]">{isTesting ? "正在测试…" : "未测试"}</div>
                     )}

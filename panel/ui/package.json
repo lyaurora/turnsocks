@@ -1,6 +1,7 @@
 {
   "type": "module",
   "scripts": {
+    "test": "node scripts/check-probe-results.mjs",
     "build": "node scripts/sync-login-tokens.mjs && vite build",
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit"

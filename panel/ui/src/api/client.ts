@@ -5,8 +5,10 @@ async function readJSON<T>(res: Response): Promise<T> {
     window.location.href = "/login";
     throw new Error("请先登录面板");
   }
-  const data = await res.json().catch(() => ({ ok: false, message: "请求失败" }));
-  if (!res.ok || data.ok === false) {
+  const data = await res.json().catch(() => { throw new Error("响应格式错误"); });
+  if (!data || typeof data !== "object") throw new Error("响应格式错误");
+  // A completed probe can return ok: false; request errors use HTTP status.
+  if (!res.ok) {
     throw new Error(data.message || "请求失败");
   }
   return data as T;

@@ -40,6 +40,7 @@ release: panel-ui
 	@(cd "$(DIST_DIR)" && sha256sum turnsocks-linux-* turnsocks-panel-linux-* | sort > SHA256SUMS)
 
 check: panel-ui
+	@$(NPM) --prefix "$(PANEL_UI_DIR)" test
 	@sh -n install.sh
 	@$(GO) test ./...
 	@if [ -f "$(DIST_DIR)/SHA256SUMS" ]; then cd "$(DIST_DIR)" && sha256sum -c SHA256SUMS; fi
