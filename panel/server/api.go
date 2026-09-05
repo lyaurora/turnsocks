@@ -83,38 +83,35 @@ func (a *app) handleSelectServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.configMu.Lock()
+	defer a.configMu.Unlock()
 	cfg, err := readProxyConfig(a.configPath)
 	if err != nil {
-		a.configMu.Unlock()
 		writeAPIError(w, err)
 		return
 	}
 	servers, ok := moveServerFirst(cfg.Servers, req.Server)
 	if !ok {
-		a.configMu.Unlock()
 		writeAPIError(w, errors.New("节点不存在"))
 		return
 	}
 	selected, err := parseServer(servers[0])
 	if err != nil {
-		a.configMu.Unlock()
 		writeAPIError(w, err)
 		return
 	}
+	previous := cfg
+	previousAddr := readRuntimeState(a.statePath).CurrentAddr
 	cfg.Servers = servers
 	if err := writeProxyConfig(a.configPath, cfg); err != nil {
-		a.configMu.Unlock()
 		writeAPIError(w, err)
 		return
 	}
 	if err := writeRuntimeState(a.statePath, selected.Addr); err != nil {
-		a.configMu.Unlock()
-		writeAPIError(w, fmt.Errorf("节点顺序已保存，但状态写入失败：%w", err))
+		writeAPIError(w, a.rollbackConfig(previous, previousAddr, fmt.Errorf("节点状态写入失败：%w", err)))
 		return
 	}
-	a.configMu.Unlock()
 	if err := restartTurnsocks(cfg.Listen); err != nil {
-		writeAPIError(w, fmt.Errorf("节点顺序已保存，但代理重启失败：%w", err))
+		writeAPIError(w, a.rollbackConfig(previous, previousAddr, err))
 		return
 	}
 	writeJSON(w, apiResponse{OK: true, Message: "节点已切换，代理已重启"})
@@ -219,8 +216,8 @@ func (a *app) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.configMu.Lock()
+	defer a.configMu.Unlock()
 	cfg, err := readProxyConfig(a.configPath)
-	a.configMu.Unlock()
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -258,12 +255,14 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.configMu.Lock()
+	defer a.configMu.Unlock()
 	cfg, err = readProxyConfig(a.configPath)
 	if err != nil {
-		a.configMu.Unlock()
 		writeAPIError(w, err)
 		return
 	}
+	previous := cfg
+	previousAddr := readRuntimeState(a.statePath).CurrentAddr
 	restartNeeded := cfg.Listen != req.Listen || cfg.DoH != req.DoH
 	cfg.Listen = req.Listen
 	cfg.DoH = req.DoH
@@ -273,7 +272,6 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.PanelPassword = req.PanelPassword
 		}
 		if cfg.PanelPassword == "" {
-			a.configMu.Unlock()
 			writeAPIError(w, errors.New("启用面板登录时必须设置密码"))
 			return
 		}
@@ -283,20 +281,36 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := writeProxyConfig(a.configPath, cfg); err != nil {
-		a.configMu.Unlock()
 		writeAPIError(w, err)
 		return
 	}
-	a.configMu.Unlock()
 	if restartNeeded {
 		if err := restartTurnsocks(cfg.Listen); err != nil {
-			writeAPIError(w, fmt.Errorf("配置已保存，但代理重启失败：%w", err))
+			writeAPIError(w, a.rollbackConfig(previous, previousAddr, err))
 			return
 		}
 		writeJSON(w, apiResponse{OK: true, Message: "配置已保存，代理已重启"})
 		return
 	}
 	writeJSON(w, apiResponse{OK: true, Message: "配置已保存"})
+}
+
+// The caller holds configMu through recovery so another save cannot be undone.
+func (a *app) rollbackConfig(previous proxyConfig, previousAddr string, cause error) error {
+	if err := writeProxyConfig(a.configPath, previous); err != nil {
+		return fmt.Errorf("%w；旧配置恢复失败：%w", cause, err)
+	}
+	var recoveryErr error
+	if err := writeRuntimeState(a.statePath, previousAddr); err != nil {
+		recoveryErr = fmt.Errorf("节点状态恢复失败：%w", err)
+	}
+	if err := restartTurnsocks(previous.Listen); err != nil {
+		recoveryErr = errors.Join(recoveryErr, fmt.Errorf("代理恢复失败：%w", err))
+	}
+	if recoveryErr != nil {
+		return fmt.Errorf("%w；已恢复旧配置，但恢复未完成：%w", cause, recoveryErr)
+	}
+	return fmt.Errorf("%w；已恢复旧配置，代理已恢复", cause)
 }
 
 func (a *app) handleServerTest(w http.ResponseWriter, r *http.Request) {

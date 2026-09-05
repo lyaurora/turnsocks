@@ -1,3 +1,5 @@
+.SHELLFLAGS := -ec
+
 GO ?= go
 NPM ?= npm
 TARGET ?= linux-amd64
@@ -37,7 +39,7 @@ release: panel-ui
 		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(DIST_DIR)/turnsocks-$$target" .; \
 		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(DIST_DIR)/turnsocks-panel-$$target" ./panel; \
 	done
-	@(cd "$(DIST_DIR)" && sha256sum turnsocks-linux-* turnsocks-panel-linux-* | sort > SHA256SUMS)
+	@(cd "$(DIST_DIR)" && sha256sum turnsocks-linux-* turnsocks-panel-linux-* > SHA256SUMS && LC_ALL=C sort -o SHA256SUMS SHA256SUMS)
 
 check: panel-ui
 	@$(NPM) --prefix "$(PANEL_UI_DIR)" test

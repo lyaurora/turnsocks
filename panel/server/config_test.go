@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -152,5 +154,153 @@ func TestUpdateServerNote(t *testing.T) {
 	}
 	if got := cfg.ServerNotes["turn.example:3478"]; got != "东京家宽" {
 		t.Fatalf("note = %q", got)
+	}
+}
+
+func TestConfigApplyRollback(t *testing.T) {
+	for _, operation := range []string{"settings", "select"} {
+		for _, tc := range []struct {
+			mode        string
+			wantCalls   int
+			wantMessage string
+		}{
+			{mode: "success", wantCalls: 1, wantMessage: "已重启"},
+			{mode: "restart_failure", wantCalls: 2, wantMessage: "已恢复旧配置，代理已恢复"},
+			{mode: "recovery_failure", wantCalls: 2, wantMessage: "代理恢复失败"},
+			{mode: "config_restore_failure", wantCalls: 1, wantMessage: "旧配置恢复失败"},
+			{mode: "state_restore_failure", wantCalls: 2, wantMessage: "节点状态恢复失败"},
+			{mode: "state_write_failure", wantCalls: 1, wantMessage: "节点状态恢复失败"},
+		} {
+			if operation != "select" && tc.mode == "state_write_failure" {
+				continue
+			}
+			t.Run(operation+"/"+tc.mode, func(t *testing.T) {
+				dir := t.TempDir()
+				a := &app{configPath: filepath.Join(dir, "config.env"), statePath: filepath.Join(dir, "state")}
+				oldListener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = oldListener.Close() })
+				newListener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = newListener.Close() })
+				if tc.mode != "success" {
+					_ = newListener.Close()
+				}
+				before := proxyConfig{
+					Listen: oldListener.Addr().String(), DoH: defaultDoH,
+					Servers:       []string{"first.example:3478", "second.example:3478", "third.example:3478"},
+					ServerNotes:   map[string]string{"first.example:3478": "personal node"},
+					PanelUsername: "old-user", PanelPassword: "old'password",
+				}
+				custom := "# personal settings\nCUSTOM='keep this'\n"
+				if err := os.WriteFile(a.configPath, []byte(updateProxyConfigText(custom, before)), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := writeRuntimeState(a.statePath, "second.example:3478"); err != nil {
+					t.Fatal(err)
+				}
+				if tc.mode == "state_write_failure" {
+					if err := os.Remove(a.statePath); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Mkdir(a.statePath, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// PATH contains only these stubs: the tests cannot restart real services.
+				t.Setenv("PATH", dir)
+				t.Setenv("CONFIG_TEST_MODE", tc.mode)
+				t.Setenv("CONFIG_TEST_CONFIG", a.configPath)
+				t.Setenv("CONFIG_TEST_STATE", a.statePath)
+				t.Setenv("CONFIG_TEST_CALLS", filepath.Join(dir, "calls"))
+				t.Setenv("CONFIG_TEST_FIRST", filepath.Join(dir, "first-restart"))
+				sudo := `#!/bin/sh
+set -eu
+[ "$*" = '-n systemctl restart turnsocks' ] || exit 99
+printf '%s\n' "$*" >> "$CONFIG_TEST_CALLS"
+if [ -f "$CONFIG_TEST_FIRST" ]; then
+    /bin/cp "$CONFIG_TEST_CONFIG" "$CONFIG_TEST_CONFIG.recovery"
+    [ "$CONFIG_TEST_MODE" != recovery_failure ]
+    exit
+fi
+: > "$CONFIG_TEST_FIRST"
+case "$CONFIG_TEST_MODE" in
+    success|state_write_failure) exit 0 ;;
+    config_restore_failure) /bin/mkdir "$CONFIG_TEST_CONFIG.tmp" ;;
+    state_restore_failure) /bin/rm "$CONFIG_TEST_STATE"; /bin/mkdir "$CONFIG_TEST_STATE" ;;
+esac
+exit 1
+`
+				for name, script := range map[string]string{
+					"sudo":      sudo,
+					"systemctl": "#!/bin/sh\n[ \"$*\" = 'is-active turnsocks' ] || exit 99\nprintf 'active\\n'\n",
+				} {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				next := before
+				var request any
+				handler := a.handleUpdateConfig
+				if operation == "select" {
+					next.Servers = []string{"third.example:3478", "first.example:3478", "second.example:3478"}
+					request = serverRequest{Server: "third.example:3478"}
+					handler = a.handleSelectServer
+				} else {
+					next.Listen = newListener.Addr().String()
+					next.PanelUsername, next.PanelPassword = "new-user", "new-password"
+					request = configRequest{
+						Listen: next.Listen, DoH: next.DoH, PanelAuthEnabled: true,
+						PanelUsername: next.PanelUsername, PanelPassword: next.PanelPassword,
+					}
+				}
+				body, err := json.Marshal(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				res := httptest.NewRecorder()
+				handler(res, httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body)))
+				if (res.Code == http.StatusOK) != (tc.mode == "success") || !strings.Contains(res.Body.String(), tc.wantMessage) {
+					t.Errorf("status = %d, body = %s; want %q", res.Code, res.Body.String(), tc.wantMessage)
+				}
+				wantConfig := before
+				wantCurrent := "second.example:3478"
+				if tc.mode == "success" || tc.mode == "config_restore_failure" {
+					wantConfig = next
+					if operation == "select" {
+						wantCurrent = "third.example:3478"
+					}
+				}
+				if tc.mode == "state_restore_failure" || tc.mode == "state_write_failure" {
+					wantCurrent = ""
+				}
+				got, err := readProxyConfig(a.configPath)
+				if err != nil || !reflect.DeepEqual(got, wantConfig) {
+					t.Errorf("config after apply = %#v, %v; want %#v", got, err, wantConfig)
+				}
+				if got := readRuntimeState(a.statePath).CurrentAddr; got != wantCurrent {
+					t.Errorf("current node = %q, want %q", got, wantCurrent)
+				}
+				raw, err := os.ReadFile(a.configPath)
+				if err != nil || !strings.Contains(string(raw), custom) {
+					t.Errorf("custom config was lost: %s, %v", raw, err)
+				}
+				calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+				if got := strings.Count(string(calls), "\n"); got != tc.wantCalls {
+					t.Errorf("restart calls = %d, want %d", got, tc.wantCalls)
+				}
+				if tc.wantCalls == 2 {
+					recovered, err := readProxyConfig(a.configPath + ".recovery")
+					if err != nil || !reflect.DeepEqual(recovered, before) {
+						t.Errorf("old config was not restored before recovery restart: %#v, %v", recovered, err)
+					}
+				}
+			})
+		}
 	}
 }

@@ -86,45 +86,45 @@ func (r *udpSessionRegistry) closeAll() {
 	}
 }
 
-func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, error) {
+func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, bool, error) {
 	key := turn.String()
 
 	p.mu.Lock()
 	if !p.keyAllowedLocked(key) {
 		p.mu.Unlock()
-		return nil, errors.New("TURN server removed from pool")
+		return nil, false, errors.New("TURN server removed from pool")
 	}
 	p.pruneClosedLocked(key)
 	for _, a := range p.allocs[key] {
 		if a.tryReservePeer(peer) {
 			p.mu.Unlock()
-			return a, nil
+			return a, true, nil
 		}
 	}
 	p.mu.Unlock()
 
 	a, err := newReservedTCPAllocation(cfg, turn, peer)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	p.mu.Lock()
 	if !p.keyAllowedLocked(key) {
 		p.mu.Unlock()
 		a.close()
-		return nil, errors.New("TURN server removed from pool")
+		return nil, false, errors.New("TURN server removed from pool")
 	}
 	p.pruneClosedLocked(key)
 	for _, existing := range p.allocs[key] {
 		if existing.tryReservePeer(peer) {
 			p.mu.Unlock()
 			a.close()
-			return existing, nil
+			return existing, true, nil
 		}
 	}
 	p.allocs[key] = append(p.allocs[key], a)
 	p.mu.Unlock()
-	return a, nil
+	return a, false, nil
 }
 
 func (p *tcpAllocationPool) addIdle(cfg Config, turn turnServerConfig) error {

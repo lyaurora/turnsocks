@@ -3,6 +3,7 @@ package proxy
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -143,7 +144,7 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 		}
 		if !allocation.trackDataConn(dataConn) {
 			allocation.close()
-			return nil, nil, errors.New("TCP allocation is closed")
+			return nil, nil, net.ErrClosed
 		}
 		return dataConn, func() {
 			allocation.untrackDataConn(dataConn)
@@ -151,34 +152,43 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 		}, nil
 	}
 
-	allocation, err := cfg.TCPAllocs.getOrCreate(cfg, turn, peer)
-	if err != nil {
-		return nil, nil, err
-	}
-	dataConn, err := allocation.connect(targetIP, targetPort)
-	if err != nil {
-		allocation.finishConnect()
+	for attempt := 0; ; attempt++ {
+		allocation, reused, err := cfg.TCPAllocs.getOrCreate(cfg, turn, peer)
+		if err != nil {
+			return nil, nil, err
+		}
+		dataConn, err := allocation.connect(targetIP, targetPort)
+		if err == nil && !allocation.trackDataConn(dataConn) {
+			err = net.ErrClosed
+		}
+		if err == nil {
+			allocation.finishConnect()
+			return dataConn, func() {
+				allocation.untrackDataConn(dataConn)
+				cfg.TCPAllocs.release(turn, allocation, peer)
+			}, nil
+		}
+		// Remove the failed allocation before allowing another peer to reserve it.
 		if isTurnServerFailure(err) {
-			cfg.TCPAllocs.release(turn, allocation, peer)
 			cfg.TCPAllocs.invalidate(turn, allocation)
 		} else if isTimeoutError(err) {
 			cfg.TCPAllocs.retire(turn, allocation)
-			cfg.TCPAllocs.release(turn, allocation, peer)
-		} else {
-			cfg.TCPAllocs.release(turn, allocation, peer)
 		}
-		return nil, nil, err
-	}
-	if !allocation.trackDataConn(dataConn) {
 		allocation.finishConnect()
 		cfg.TCPAllocs.release(turn, allocation, peer)
-		return nil, nil, errors.New("TCP allocation is closed")
+		// Retry a stale pooled transport once, before any application data is sent.
+		if attempt != 0 || !reused || !isDisconnectedError(err) {
+			return nil, nil, err
+		}
 	}
-	allocation.finishConnect()
-	return dataConn, func() {
-		allocation.untrackDataConn(dataConn)
-		cfg.TCPAllocs.release(turn, allocation, peer)
-	}, nil
+}
+
+func isDisconnectedError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && !opErr.Timeout() && (opErr.Op == "read" || opErr.Op == "write")
 }
 
 func tcpPeerKey(ip net.IP, port int) string {
@@ -246,7 +256,7 @@ func connectedTurnAddr(conn net.Conn, fallback string) string {
 
 func (a *tcpAllocation) connectPeerLocked(targetIP net.IP, targetPort int) ([]byte, error) {
 	if a.closed.Load() {
-		return nil, errors.New("TCP allocation is closed")
+		return nil, net.ErrClosed
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
