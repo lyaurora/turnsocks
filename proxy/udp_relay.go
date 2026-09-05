@@ -117,6 +117,7 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 		if tcpErr == nil {
 			return s, turn.Addr + "/tcp", nil
 		}
+		cfg.TurnPool.recordFailure(turn.Addr, "TURN UDP（TCP 传输）", tcpErr)
 		errs = append(errs, fmt.Errorf("%s/tcp: %w", turn.Addr, tcpErr))
 		if err != nil {
 			log.Printf("UDP TURN candidate failed via %s: %v", turn.Addr, errors.Join(err, tcpErr))
@@ -628,7 +629,7 @@ func (s *udpSession) refreshLoop() {
 					return
 				}
 				if retryErr := s.refreshAllocation(); retryErr != nil {
-					s.cfg.TurnPool.markUDPFailure(s.turn, retryErr)
+					s.cfg.TurnPool.markUDPFailure(s.turn, fmt.Errorf("会话续期失败：%w", retryErr))
 					log.Printf("UDP allocation refresh failed via %s after retry: %v", s.turn.Addr, errors.Join(err, retryErr))
 					s.fail()
 					return
@@ -692,6 +693,9 @@ func (s *udpSession) readTurnLoop() {
 	for {
 		m, data, ok, err := s.turnConn.readMessageOrData(0)
 		if err != nil {
+			if !s.isClosed() {
+				s.cfg.TurnPool.recordFailure(s.turn.Addr, "UDP 会话读取", err)
+			}
 			s.fail()
 			return
 		}
@@ -912,6 +916,9 @@ func (s *udpSession) readLocalUDPLoop() {
 		}
 
 		if err := s.ensurePermission(ip); err != nil {
+			if !s.isClosed() {
+				s.cfg.TurnPool.recordFailure(s.turn.Addr, "UDP 转发权限", err)
+			}
 			if s.cfg.LogVerbose {
 				log.Printf("CreatePermission failed %s: %v", ip.String(), err)
 			}
@@ -931,6 +938,9 @@ func (s *udpSession) readLocalUDPLoop() {
 		err = s.turnConn.writeRaw(raw, s.cfg.Timeout)
 		s.writeMu.Unlock()
 		if err != nil {
+			if !s.isClosed() {
+				s.cfg.TurnPool.recordFailure(s.turn.Addr, "UDP 发送", err)
+			}
 			s.fail()
 			return
 		}

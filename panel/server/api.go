@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lyaurora/turnsocks/panel/probe"
+	"github.com/lyaurora/turnsocks/runtimestate"
 )
 
 func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
@@ -26,14 +29,16 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := readRuntimeState(a.statePath)
-	tests := a.readServerTests()
+	tests := a.readServerTests(a.testPath)
+	checks := a.readServerTests(a.checkPath)
 	writeJSON(w, stateResponse{
 		Listen:           cfg.Listen,
 		DoH:              cfg.DoH,
 		PanelUsername:    cfg.PanelUsername,
 		PanelAuthEnabled: cfg.PanelUsername != "" && cfg.PanelPassword != "",
-		Servers:          buildServerInfo(cfg.Servers, cfg.ServerNotes, state.CurrentAddr, tests),
+		Servers:          buildServerInfo(cfg.Servers, cfg.ServerNotes, state.CurrentAddr, tests, checks),
 		Service:          readServiceInfo(),
+		Runtime:          state,
 	})
 }
 
@@ -100,18 +105,18 @@ func (a *app) handleSelectServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previous := cfg
-	previousAddr := readRuntimeState(a.statePath).CurrentAddr
+	previousState := readRuntimeState(a.statePath)
 	cfg.Servers = servers
 	if err := writeProxyConfig(a.configPath, cfg); err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	if err := writeRuntimeState(a.statePath, selected.Addr); err != nil {
-		writeAPIError(w, a.rollbackConfig(previous, previousAddr, fmt.Errorf("节点状态写入失败：%w", err)))
+		writeAPIError(w, a.rollbackConfig(previous, previousState, fmt.Errorf("节点状态写入失败：%w", err)))
 		return
 	}
 	if err := restartTurnsocks(cfg.Listen); err != nil {
-		writeAPIError(w, a.rollbackConfig(previous, previousAddr, err))
+		writeAPIError(w, a.rollbackConfig(previous, previousState, err))
 		return
 	}
 	writeJSON(w, apiResponse{OK: true, Message: "节点已切换，代理已重启"})
@@ -262,7 +267,7 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previous := cfg
-	previousAddr := readRuntimeState(a.statePath).CurrentAddr
+	previousState := readRuntimeState(a.statePath)
 	restartNeeded := cfg.Listen != req.Listen || cfg.DoH != req.DoH
 	cfg.Listen = req.Listen
 	cfg.DoH = req.DoH
@@ -286,7 +291,7 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if restartNeeded {
 		if err := restartTurnsocks(cfg.Listen); err != nil {
-			writeAPIError(w, a.rollbackConfig(previous, previousAddr, err))
+			writeAPIError(w, a.rollbackConfig(previous, previousState, err))
 			return
 		}
 		writeJSON(w, apiResponse{OK: true, Message: "配置已保存，代理已重启"})
@@ -296,12 +301,15 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // The caller holds configMu through recovery so another save cannot be undone.
-func (a *app) rollbackConfig(previous proxyConfig, previousAddr string, cause error) error {
+func (a *app) rollbackConfig(previous proxyConfig, previousState runtimeState, cause error) error {
 	if err := writeProxyConfig(a.configPath, previous); err != nil {
 		return fmt.Errorf("%w；旧配置恢复失败：%w", cause, err)
 	}
 	var recoveryErr error
-	if err := writeRuntimeState(a.statePath, previousAddr); err != nil {
+	if err := runtimestate.Update(a.statePath, func(state *runtimeState) {
+		state.CurrentAddr = previousState.CurrentAddr
+		state.LastSwitch = previousState.LastSwitch
+	}); err != nil {
 		recoveryErr = fmt.Errorf("节点状态恢复失败：%w", err)
 	}
 	if err := restartTurnsocks(previous.Listen); err != nil {
@@ -321,6 +329,13 @@ func (a *app) handleServerTest(w http.ResponseWriter, r *http.Request) {
 	req, err := readServerRequest(r)
 	if err != nil {
 		writeAPIError(w, err)
+		return
+	}
+	if req.Mode == "" {
+		req.Mode = probe.ModeSpeed
+	}
+	if req.Mode != probe.ModeSpeed && req.Mode != probe.ModeCheck {
+		writeAPIError(w, errors.New("未知的检测模式"))
 		return
 	}
 	server, err := normalizeServer(req.Server)
@@ -346,8 +361,19 @@ func (a *app) handleServerTest(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	result := a.testServer(r.Context(), server, info, cfg.DoH)
-	result.TestedAt = time.Now().Format(time.RFC3339)
+	// ponytail: one active probe per panel; add a queue only for shared use.
+	if !a.probeMu.TryLock() {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusConflict)
+		writeJSON(w, apiResponse{Message: "已有检测正在进行，请等待完成或在发起检测的页面停止"})
+		return
+	}
+	defer a.probeMu.Unlock()
+	result := a.testServer(r.Context(), server, info, cfg.DoH, req.Mode)
+	if r.Context().Err() != nil {
+		return
+	}
+	result.TestedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := a.saveServerTest(server, result); err != nil {
 		result.Message += "，但保存失败：" + err.Error()
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"time"
 )
 
@@ -22,6 +23,7 @@ func Run(opts Options) error {
 		configPath: cfgPath,
 		statePath:  absPath(stPath),
 		testPath:   absPath(defaultTestResultsPath(cfgPath)),
+		checkPath:  filepath.Join(filepath.Dir(cfgPath), "turnsocks.checks.json"),
 		ui:         opts.UI,
 	}
 	authStore, err := newPanelAuthStore(cfgPath)

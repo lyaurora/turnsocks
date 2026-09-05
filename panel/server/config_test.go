@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lyaurora/turnsocks/runtimestate"
 )
 
 func TestPanelPasswordRoundTrip(t *testing.T) {
@@ -128,6 +130,7 @@ func TestServerNotesRoundTripAndFollowServer(t *testing.T) {
 		loaded.ServerNotes,
 		"",
 		nil,
+		nil,
 	)
 	if got := infos[0].Note; got != "大阪备用" {
 		t.Fatalf("second server note = %q", got)
@@ -224,6 +227,12 @@ func TestConfigApplyRollback(t *testing.T) {
 				if err := writeRuntimeState(a.statePath, "second.example:3478"); err != nil {
 					t.Fatal(err)
 				}
+				if err := runtimestate.Update(a.statePath, func(state *runtimeState) {
+					state.LastFailure = &runtimestate.Failure{Stage: "TURN TCP", Message: "previous failure"}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				previousRuntime := readRuntimeState(a.statePath)
 				if tc.mode == "state_write_failure" {
 					if err := os.Remove(a.statePath); err != nil {
 						t.Fatal(err)
@@ -308,6 +317,12 @@ exit 1
 				}
 				if got := readRuntimeState(a.statePath).CurrentAddr; got != wantCurrent {
 					t.Errorf("current node = %q, want %q", got, wantCurrent)
+				}
+				if tc.mode == "restart_failure" || tc.mode == "startup_failure" || tc.mode == "recovery_failure" {
+					state := readRuntimeState(a.statePath)
+					if !reflect.DeepEqual(state.LastSwitch, previousRuntime.LastSwitch) || !reflect.DeepEqual(state.LastFailure, previousRuntime.LastFailure) {
+						t.Errorf("rollback lost failure history or kept a failed selection: %+v", state)
+					}
 				}
 				raw, err := os.ReadFile(a.configPath)
 				if err != nil || !strings.Contains(string(raw), custom) {

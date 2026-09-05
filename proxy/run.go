@@ -68,9 +68,6 @@ func Run() {
 	cfg.TCPAllocs.setAllowed(cfg.TurnServers)
 	cfg.UDPPrewarm = newUDPPrewarmPool()
 	cfg.UDPSessions = newUDPSessionRegistry()
-	if len(cfg.TurnServers) > 0 {
-		cfg.TurnPool.markSuccess(initialTurnServer(cfg.TurnServers, readRuntimeState(cfg.StatePath)))
-	}
 	dohURL, err := url.ParseRequestURI(cfg.DoH)
 	if err != nil {
 		log.Fatalf("invalid DoH endpoint: %v", err)

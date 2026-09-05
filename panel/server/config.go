@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
+	"github.com/lyaurora/turnsocks/runtimestate"
 	"github.com/lyaurora/turnsocks/turncfg"
 )
 
@@ -218,7 +218,7 @@ func parseServer(raw string) (serverInfo, error) {
 	}, nil
 }
 
-func buildServerInfo(servers []string, notes map[string]string, currentAddr string, tests map[string]serverTestResponse) []serverInfo {
+func buildServerInfo(servers []string, notes map[string]string, currentAddr string, tests, checks map[string]serverTestResponse) []serverInfo {
 	infos := make([]serverInfo, 0, len(servers))
 	for i, server := range servers {
 		info, err := parseServer(server)
@@ -230,6 +230,9 @@ func buildServerInfo(servers []string, notes map[string]string, currentAddr stri
 		if test, ok := tests[info.Raw]; ok {
 			t := test
 			info.Test = &t
+		}
+		if check, ok := checks[info.Raw]; ok {
+			info.Check = &check
 		}
 		infos = append(infos, info)
 	}
@@ -251,49 +254,13 @@ func buildServerInfo(servers []string, notes map[string]string, currentAddr stri
 }
 
 func readRuntimeState(path string) runtimeState {
-	if path == "" {
-		return runtimeState{}
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return runtimeState{}
-	}
-	var state runtimeState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return runtimeState{}
-	}
-	state.CurrentAddr = strings.TrimSpace(state.CurrentAddr)
-	return state
+	return runtimestate.Read(path)
 }
 
 func writeRuntimeState(path string, currentAddr string) error {
-	if path == "" {
-		return nil
-	}
-	state := runtimeState{
-		CurrentAddr: currentAddr,
-		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
-	}
-	raw, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	raw = append(raw, '\n')
-
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if _, err := tmp.Write(raw); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
+	return runtimestate.Update(path, func(state *runtimeState) {
+		state.Select(currentAddr, "面板手动切换")
+	})
 }
 
 func containsServer(servers []string, server string) bool {

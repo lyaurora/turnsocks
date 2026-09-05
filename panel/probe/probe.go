@@ -12,6 +12,13 @@ const (
 	testMultiThreads = 4
 )
 
+type Mode string
+
+const (
+	ModeCheck Mode = "check"
+	ModeSpeed Mode = "speed"
+)
+
 type Server struct {
 	Raw  string
 	Addr string
@@ -22,10 +29,12 @@ type Runner struct {
 }
 
 type Result struct {
+	Mode          Mode    `json:"mode,omitempty"`
 	OK            bool    `json:"ok"`
 	Message       string  `json:"message"`
 	Addr          string  `json:"addr"`
 	TCPConnect    Metric  `json:"tcpConnect"`
+	SOCKSTCP      *Check  `json:"socksTcp,omitempty"`
 	SOCKSUDP      Check   `json:"socksUdp"`
 	SingleThread  Speed   `json:"singleThread"`
 	MultiThread   Speed   `json:"multiThread"`
@@ -60,13 +69,23 @@ type Speed struct {
 	Source  string  `json:"source,omitempty"`
 }
 
-func (r Runner) Test(ctx context.Context, server Server, doh string) Result {
+func (r Runner) Test(ctx context.Context, server Server, doh string, mode Mode) (resp Result) {
 	start := time.Now()
-	resp := Result{
-		Addr:          server.Addr,
-		DownloadBytes: testSingleBytes + int64(testMultiThreads)*testMultiBytes,
+	resp = Result{Addr: server.Addr, Mode: mode}
+	defer func() {
+		resp.DurationMS = elapsedMS(start)
+		if ctx.Err() != nil {
+			resp.OK = false
+			resp.Message = "检测已停止"
+		}
+	}()
+	if ctx.Err() != nil {
+		return resp
 	}
-	resp.TCPConnect = measureTCPConnect(server.Addr)
+	resp.TCPConnect = measureTCPConnect(ctx, server.Addr)
+	if ctx.Err() != nil {
+		return resp
+	}
 
 	proxyAddr, cleanup, err := r.startTestProxy(ctx, server.Raw, doh)
 	if err != nil {
@@ -74,17 +93,37 @@ func (r Runner) Test(ctx context.Context, server Server, doh string) Result {
 		resp.SOCKSUDP = Check{Message: msg}
 		resp.SingleThread = Speed{Threads: 1, Message: msg}
 		resp.MultiThread = Speed{Threads: testMultiThreads, Message: msg}
-		resp.DurationMS = round1(float64(time.Since(start).Microseconds()) / 1000)
 		resp.Message = msg
 		return resp
 	}
 	defer cleanup()
 
-	resp.SOCKSUDP = testSOCKSUDP(proxyAddr)
+	if mode == ModeCheck {
+		tcp := testSOCKSTCP(ctx, proxyAddr)
+		resp.SOCKSTCP = &tcp
+		if ctx.Err() != nil {
+			return resp
+		}
+		resp.SOCKSUDP = testSOCKSUDP(ctx, proxyAddr)
+		resp.OK = tcp.OK && resp.SOCKSUDP.OK
+		resp.Message = "检查完成，TCP / UDP 转发可用"
+		if !resp.OK {
+			resp.Message = "检查完成，部分转发不可用，请查看详情"
+		}
+		return resp
+	}
+
+	resp.DownloadBytes = testSingleBytes + int64(testMultiThreads)*testMultiBytes
+	resp.SOCKSUDP = testSOCKSUDP(ctx, proxyAddr)
+	if ctx.Err() != nil {
+		return resp
+	}
 	resp.SingleThread = measureDownloadSpeed(ctx, proxyAddr, 1, testSingleBytes)
+	if ctx.Err() != nil {
+		return resp
+	}
 	resp.MultiThread = measureDownloadSpeed(ctx, proxyAddr, testMultiThreads, testMultiBytes)
 	resp.OK = resp.SingleThread.OK || resp.MultiThread.OK
-	resp.DurationMS = round1(float64(time.Since(start).Microseconds()) / 1000)
 	resp.Message = serverTestMessage(resp)
 	return resp
 }

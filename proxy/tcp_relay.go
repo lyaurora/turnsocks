@@ -122,6 +122,7 @@ func dialTurnTCP(cfg Config, targetIP net.IP, targetPort int) (net.Conn, func(),
 			cfg.TurnPool.markFailure(turn, err)
 			log.Printf("TURN TCP candidate failed via %s: %v", turn.Addr, err)
 		} else {
+			cfg.TurnPool.recordFailure(turn.Addr, "TCP 目标连接", err)
 			log.Printf("TURN TCP peer connect failed via %s without cooling: %v", turn.Addr, err)
 			return nil, nil, "", err
 		}
@@ -493,7 +494,7 @@ func (a *tcpAllocation) refreshLoop() {
 					return
 				}
 				if retryErr := a.refresh(); retryErr != nil {
-					a.cfg.TurnPool.markFailure(a.turn, retryErr)
+					a.cfg.TurnPool.markFailure(a.turn, fmt.Errorf("会话续期失败：%w", retryErr))
 					log.Printf("TCP allocation refresh failed via %s after retry: %v", a.turn.Addr, errors.Join(err, retryErr))
 					a.close()
 					a.closeTrackedDataConns()

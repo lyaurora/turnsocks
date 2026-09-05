@@ -3,18 +3,18 @@ import { Chip } from "../../components/Chip";
 import { IconAlert, IconEdit, IconPlus, IconTrash, IconZap } from "../../components/icons";
 import { iconDangerButtonClass, inputClass, primaryButtonClass, smallButtonClass, softButtonClass, topButtonClass } from "../../controlClasses";
 import { displayHost, displayPort, formatTestTime, mbps, ms } from "../../lib/format";
-import type { PanelState, ServerTest } from "../../types/panel";
+import type { ActiveProbe, PanelState, ProbeMode, ServerInfo, ServerTest } from "../../types/panel";
 
 type Props = {
   state: PanelState;
   serverInput: string;
-  testing: Set<string>;
-  busy: boolean;
+  testing: ActiveProbe | null;
   locked: boolean;
   onServerInput: (value: string) => void;
   onAddServer: (event: FormEvent) => void;
-  onTestServer: (server: string) => void;
-  onTestAll: () => void;
+  onTestServer: (server: string, mode: ProbeMode) => void;
+  onTestAll: (mode: ProbeMode) => void;
+  onStopTesting: () => void;
   onSelectServer: (server: string) => void;
   onDeleteServer: (server: string) => void;
   onUpdateNote: (server: string, note: string) => Promise<boolean>;
@@ -44,13 +44,34 @@ function Metric({ label, value, unit, valueClass = "text-[13px] font-semibold te
 }
 
 function TestResults({ test, dim }: { test: ServerTest; dim?: boolean }) {
+  if (test.mode === "check") {
+    if (!test.socksTcp) return <TestFailure test={test} dim={dim} />;
+    return (
+      <div className={`space-y-2 transition-opacity ${dim ? "opacity-45" : ""}`}>
+        <div className="text-[11px] font-medium text-[hsl(var(--muted-foreground))]">连通性检查</div>
+        <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-4">
+          <Metric label="节点 TCP 延迟" value={test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"} />
+          <Metric label="TCP 转发" value={test.socksTcp.ok ? "可用" : "失败"} valueClass={`text-[13px] font-semibold ${toneText[test.socksTcp.ok ? "ok" : "danger"]}`} />
+          <Metric label="UDP 转发" value={test.socksUdp?.ok ? "可用" : "失败"} valueClass={`text-[13px] font-semibold ${toneText[test.socksUdp?.ok ? "ok" : "danger"]}`} />
+          <Metric label="检查时间" value={formatTestTime(test.testedAt)} valueClass="whitespace-nowrap text-[12px] text-[hsl(var(--foreground))]" />
+        </div>
+        {[
+          { label: "TCP 转发", check: test.socksTcp },
+          { label: "UDP 转发", check: test.socksUdp }
+        ].filter(({ check }) => !check?.ok).map(({ label, check }) => (
+          <p key={label} className="break-all text-[12px] text-[hsl(var(--danger))]">{label}：{check?.message || "检查失败"}</p>
+        ))}
+      </div>
+    );
+  }
   const hasDownload = (test.singleThread?.bytes || 0) > 0 || (test.multiThread?.bytes || 0) > 0;
   if (!test.ok && !hasDownload) return <TestFailure test={test} dim={dim} />;
   const tcpTone = test.tcpConnect?.ok ? latencyTone(test.tcpConnect.avgMs) : "danger";
   return (
     <div className={`space-y-3 transition-opacity ${dim ? "opacity-45" : ""}`}>
+      <div className="text-[11px] font-medium text-[hsl(var(--muted-foreground))]">带宽测试</div>
       <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 xl:grid-cols-5">
-        <Metric label="TCP 延迟" value={test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"} valueClass={`text-[13px] font-semibold ${test.tcpConnect?.ok ? toneText[tcpTone] : "text-[hsl(var(--danger))]"}`} />
+        <Metric label="节点 TCP 延迟" value={test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"} valueClass={`text-[13px] font-semibold ${test.tcpConnect?.ok ? toneText[tcpTone] : "text-[hsl(var(--danger))]"}`} />
         <Metric label="UDP 转发" value={test.socksUdp?.ok ? "可用" : "失败"} valueClass={`text-[13px] font-semibold ${test.socksUdp?.ok ? "text-[hsl(var(--ok))]" : "text-[hsl(var(--danger))]"}`} />
         {[
           { label: "单线程", speed: test.singleThread },
@@ -67,6 +88,16 @@ function TestResults({ test, dim }: { test: ServerTest; dim?: boolean }) {
         <Metric label="测试时间" value={formatTestTime(test.testedAt)} valueClass="whitespace-nowrap text-[12px] text-[hsl(var(--foreground))]" />
       </div>
       {!test.ok && <TestFailure test={test} />}
+    </div>
+  );
+}
+
+function NodeResults({ server, dim }: { server: ServerInfo; dim?: boolean }) {
+  return (
+    <div className="space-y-4">
+      {server.check && <TestResults test={server.check} dim={dim} />}
+      {server.test && <TestResults test={server.test} dim={dim} />}
+      {!server.check && !server.test && <div className="text-[12px] text-[hsl(var(--muted-foreground))]">{dim ? "正在检测…" : "尚未检测，点击“检查”验证连通性，或“测速”测量带宽"}</div>}
     </div>
   );
 }
@@ -89,7 +120,7 @@ function NoteChip({ note }: { note: string }) {
   );
 }
 
-export function NodePanel({ state, serverInput, testing, busy, locked, onServerInput, onAddServer, onTestServer, onTestAll, onSelectServer, onDeleteServer, onUpdateNote }: Props) {
+export function NodePanel({ state, serverInput, testing, locked, onServerInput, onAddServer, onTestServer, onTestAll, onStopTesting, onSelectServer, onDeleteServer, onUpdateNote }: Props) {
   const currentServer = state.servers.find((server) => server.current) || state.servers[0];
   const [editing, setEditing] = useState("");
   const [note, setNote] = useState("");
@@ -135,27 +166,27 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
               {currentServer.note && <NoteChip note={currentServer.note} />}
             </div>
           )}
-          {currentServer?.test ? (
-            <TestResults test={currentServer.test} dim={testing.has(currentServer.raw)} />
-          ) : currentServer ? (
-            <div className="text-[12px] text-[hsl(var(--muted-foreground))]">尚未测速，点击下方“测试”查看节点质量</div>
-          ) : null}
+          {currentServer && <NodeResults server={currentServer} dim={testing?.server === currentServer.raw} />}
         </div>
       </section>
 
       <section className="shell-window overflow-hidden">
-        <div className="flex items-center justify-between gap-3 border-b border-[hsl(var(--border))] px-4 py-3.5 md:px-[18px]">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--border))] px-4 py-3.5 md:px-[18px]">
           <h2 className="text-[14.5px] font-semibold text-[hsl(var(--foreground))]">节点管理</h2>
-          <button className={smallButtonClass} disabled={locked} onClick={onTestAll} type="button">
-            <IconZap className="h-3.5 w-3.5" />
-            测试全部
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {testing && <button className={smallButtonClass} onClick={onStopTesting} type="button">停止检测</button>}
+            <button className={smallButtonClass} disabled={locked || !state.servers.length} onClick={() => onTestAll("check")} title="使用少量流量检查 TCP / UDP 转发" type="button">检查全部</button>
+            <button className={smallButtonClass} disabled={locked || !state.servers.length} onClick={() => onTestAll("speed")} title="依次测速，每个节点约 112 MiB 下载流量" type="button">
+              <IconZap className="h-3.5 w-3.5" />
+              测速全部
+            </button>
+          </div>
         </div>
 
         <div className="p-4 md:p-[18px]">
           <form className="mb-4 flex flex-col gap-2.5 sm:flex-row" onSubmit={onAddServer}>
             <input type="text" placeholder="host:port 或 user:pass@host:port" value={serverInput} onChange={(event) => onServerInput(event.target.value)} className={`${inputClass} flex-1`} />
-            <button className={`${primaryButtonClass} min-h-[38px] px-4`} disabled={busy} type="submit">
+            <button className={`${primaryButtonClass} min-h-[38px] px-4`} disabled={locked} type="submit">
               <IconPlus className="h-3.5 w-3.5" />
               添加节点
             </button>
@@ -164,8 +195,7 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
           <div className="grid gap-3">
             {state.servers.map((server) => {
               const isCurrent = server.current;
-              const isTesting = testing.has(server.raw);
-              const test = server.test;
+              const isTesting = testing?.server === server.raw;
               return (
                 <article key={server.raw} className={`rounded-xl border p-[14px] transition-shadow md:px-4 ${isCurrent ? "border-[hsl(var(--primary))]/45 bg-[hsl(var(--primary))]/[0.03]" : "border-[hsl(var(--border))] hover:border-[hsl(var(--input))] hover:shadow-md"}`}>
                   <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
@@ -175,29 +205,26 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
                         {isCurrent ? <Chip active>当前</Chip> : server.default ? <Chip>默认</Chip> : <Chip>备用</Chip>}
                         <Chip>{server.hasAuth ? `鉴权：${server.username || "已配置"}` : "无鉴权"}</Chip>
                         {server.note && <NoteChip note={server.note} />}
-                        <button disabled={busy} onClick={() => editNote(server.raw, server.note)} className="ui-tooltip inline-grid h-6 w-7 flex-none cursor-pointer place-items-center rounded-[7px] border border-[hsl(var(--border))] bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] transition-colors before:absolute before:-inset-2.5 hover:border-[hsl(var(--input))] hover:text-[hsl(var(--foreground))] disabled:cursor-wait disabled:opacity-55" aria-label={server.note ? "修改备注" : "添加备注"} data-tooltip={server.note ? "修改备注" : "添加备注"} type="button">
+                        <button disabled={locked} onClick={() => editNote(server.raw, server.note)} className="ui-tooltip inline-grid h-6 w-7 flex-none cursor-pointer place-items-center rounded-[7px] border border-[hsl(var(--border))] bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] transition-colors before:absolute before:-inset-2.5 hover:border-[hsl(var(--input))] hover:text-[hsl(var(--foreground))] disabled:cursor-wait disabled:opacity-55" aria-label={server.note ? "修改备注" : "添加备注"} data-tooltip={server.note ? "修改备注" : "添加备注"} type="button">
                           {server.note ? <IconEdit className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
                         </button>
-                        {isTesting && <Chip warn><span className="animate-pulse motion-reduce:animate-none">测试中</span></Chip>}
+                        {isTesting && <Chip warn><span className="animate-pulse motion-reduce:animate-none">{testing.mode === "check" ? "检查中" : "测速中"}</span></Chip>}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-[7px] sm:justify-end">
-                      <button disabled={busy || isTesting} onClick={() => onTestServer(server.raw)} className={smallButtonClass} type="button">测试</button>
+                      <button disabled={locked} onClick={() => onTestServer(server.raw, "check")} className={smallButtonClass} title="使用少量流量检查 TCP / UDP 转发" type="button">检查</button>
+                      <button disabled={locked} onClick={() => onTestServer(server.raw, "speed")} className={smallButtonClass} title="约 112 MiB 下载流量" type="button">测速</button>
                       {!isCurrent && (
-                        <button disabled={busy} onClick={() => onSelectServer(server.raw)} className={softButtonClass} type="button">切换</button>
+                        <button disabled={locked} onClick={() => onSelectServer(server.raw)} className={softButtonClass} type="button">切换</button>
                       )}
-                      <button disabled={busy || isTesting} onClick={() => onDeleteServer(server.raw)} className={`${iconDangerButtonClass} ui-tooltip`} aria-label="删除" data-tooltip="删除" data-tooltip-side="top" type="button">
+                      <button disabled={locked} onClick={() => onDeleteServer(server.raw)} className={`${iconDangerButtonClass} ui-tooltip`} aria-label="删除" data-tooltip="删除" data-tooltip-side="top" type="button">
                         <IconTrash className="h-4 w-4" />
                       </button>
                     </div>
                   </div>
 
                   <div className="mt-3 border-t border-[hsl(var(--border))] pt-3">
-                    {test ? (
-                      <TestResults test={test} dim={isTesting} />
-                    ) : (
-                      <div className="text-[12px] text-[hsl(var(--muted-foreground))]">{isTesting ? "正在测试…" : "未测试"}</div>
-                    )}
+                    <NodeResults server={server} dim={isTesting} />
                   </div>
                 </article>
               );
@@ -223,7 +250,7 @@ export function NodePanel({ state, serverInput, testing, busy, locked, onServerI
           <input autoFocus maxLength={60} value={note} onChange={(event) => setNote(event.target.value)} placeholder="输入节点备注" className={`${inputClass} mt-4 w-full font-sans`} />
           <div className="mt-5 flex justify-end gap-2">
             <button className={topButtonClass} onClick={() => setEditing("")} type="button">取消</button>
-            <button className={`${primaryButtonClass} h-[34px] px-[13px]`} disabled={busy} type="submit">保存备注</button>
+            <button className={`${primaryButtonClass} h-[34px] px-[13px]`} disabled={locked} type="submit">保存备注</button>
           </div>
         </form>
       </dialog>

@@ -64,9 +64,9 @@ func TestTurnPoolAddsFirstServer(t *testing.T) {
 	}
 
 	server := turnServerConfig{Addr: "turn-a:3478"}
-	changed, currentChanged, currentAddr, added, removed := p.updateServers([]turnServerConfig{server})
-	if !changed || !currentChanged || currentAddr != server.Addr || added != 1 || removed != 0 {
-		t.Fatalf("unexpected update result: changed=%v currentChanged=%v currentAddr=%q added=%d removed=%d", changed, currentChanged, currentAddr, added, removed)
+	changed, added, removed := p.updateServers([]turnServerConfig{server})
+	if !changed || p.current != server.String() || added != 1 || removed != 0 {
+		t.Fatalf("unexpected update result: changed=%v current=%q added=%d removed=%d", changed, p.current, added, removed)
 	}
 	if got := p.candidates(); len(got) != 1 || got[0].String() != server.String() {
 		t.Fatalf("first server was not activated: %#v", got)

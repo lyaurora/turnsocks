@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/lyaurora/turnsocks/panel/probe"
+	"github.com/lyaurora/turnsocks/runtimestate"
 )
 
 const (
@@ -27,9 +28,11 @@ type app struct {
 	configPath string
 	statePath  string
 	testPath   string
+	checkPath  string
 	ui         fs.FS
 	configMu   sync.Mutex
 	testMu     sync.Mutex
+	probeMu    sync.Mutex
 }
 
 type serverTestResponse = probe.Result
@@ -52,6 +55,7 @@ type serverInfo struct {
 	Current  bool                `json:"current"`
 	Default  bool                `json:"default"`
 	Test     *serverTestResponse `json:"test,omitempty"`
+	Check    *serverTestResponse `json:"check,omitempty"`
 }
 
 type serviceInfo struct {
@@ -66,11 +70,13 @@ type stateResponse struct {
 	PanelAuthEnabled bool         `json:"panelAuthEnabled"`
 	Servers          []serverInfo `json:"servers"`
 	Service          serviceInfo  `json:"service"`
+	Runtime          runtimeState `json:"runtime"`
 }
 
 type serverRequest struct {
-	Server string `json:"server"`
-	Note   string `json:"note,omitempty"`
+	Server string     `json:"server"`
+	Note   string     `json:"note,omitempty"`
+	Mode   probe.Mode `json:"mode,omitempty"`
 }
 
 type configRequest struct {
@@ -86,7 +92,4 @@ type apiResponse struct {
 	Message string `json:"message"`
 }
 
-type runtimeState struct {
-	CurrentAddr string `json:"current_addr"`
-	UpdatedAt   string `json:"updated_at"`
-}
+type runtimeState = runtimestate.State

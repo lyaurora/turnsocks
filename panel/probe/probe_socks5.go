@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -24,9 +24,29 @@ func httpClientViaSOCKS(proxyAddr string, timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: transport}
 }
 
-func testSOCKSUDP(proxyAddr string) Check {
+func testSOCKSTCP(ctx context.Context, proxyAddr string) Check {
 	start := time.Now()
-	tcpConn, udpAddr, err := socks5UDPAssociate(proxyAddr, 5*time.Second)
+	client := httpClientViaSOCKS(proxyAddr, 12*time.Second)
+	defer client.CloseIdleConnections()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://www.gstatic.com/generate_204", nil)
+	if err != nil {
+		return Check{Message: err.Error()}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return Check{Message: err.Error()}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return Check{Message: fmt.Sprintf("连通性检查返回 HTTP %d，预期 204", resp.StatusCode)}
+	}
+	return Check{OK: true, Message: "TCP 转发可用", MS: elapsedMS(start)}
+}
+
+func testSOCKSUDP(ctx context.Context, proxyAddr string) Check {
+	start := time.Now()
+	tcpConn, udpAddr, err := socks5UDPAssociate(ctx, proxyAddr, 5*time.Second)
 	if err != nil {
 		return Check{Message: err.Error()}
 	}
@@ -37,6 +57,11 @@ func testSOCKSUDP(proxyAddr string) Check {
 		return Check{Message: err.Error()}
 	}
 	defer udpConn.Close()
+	stop := context.AfterFunc(ctx, func() {
+		_ = tcpConn.Close()
+		_ = udpConn.Close()
+	})
+	defer stop()
 	_ = udpConn.SetDeadline(time.Now().Add(8 * time.Second))
 
 	txID, payload := dnsQueryPayload("cloudflare.com")
@@ -54,17 +79,19 @@ func testSOCKSUDP(proxyAddr string) Check {
 	if err != nil {
 		return Check{Message: err.Error()}
 	}
-	if len(dnsPayload) < 2 || binary.BigEndian.Uint16(dnsPayload[:2]) != txID {
+	if len(dnsPayload) < 12 || binary.BigEndian.Uint16(dnsPayload[:2]) != txID || dnsPayload[2]&0x80 == 0 {
 		return Check{Message: "DNS 响应不匹配"}
 	}
 	return Check{OK: true, Message: "UDP 转发可用", MS: elapsedMS(start)}
 }
 
-func socks5UDPAssociate(proxyAddr string, timeout time.Duration) (net.Conn, *net.UDPAddr, error) {
-	conn, err := net.DialTimeout("tcp", proxyAddr, timeout)
+func socks5UDPAssociate(ctx context.Context, proxyAddr string, timeout time.Duration) (net.Conn, *net.UDPAddr, error) {
+	conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, nil, err
 	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		_ = conn.Close()
 		return nil, nil, err
@@ -90,7 +117,7 @@ func socks5UDPAssociate(proxyAddr string, timeout time.Duration) (net.Conn, *net
 		_ = conn.Close()
 		return nil, nil, err
 	}
-	if buf[1] != 0x00 {
+	if buf[0] != 0x05 || buf[1] != 0x00 || buf[2] != 0x00 {
 		_ = conn.Close()
 		return nil, nil, fmt.Errorf("UDP ASSOCIATE failed: 0x%02x", buf[1])
 	}
@@ -107,19 +134,28 @@ func socks5UDPAssociate(proxyAddr string, timeout time.Duration) (net.Conn, *net
 	if host == "" || host == "0.0.0.0" {
 		host = "127.0.0.1"
 	}
-	udpAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
 		_ = conn.Close()
 		return nil, nil, err
 	}
+	if len(addrs) == 0 || port == 0 {
+		_ = conn.Close()
+		return nil, nil, errors.New("SOCKS5 返回了无效的 UDP 地址")
+	}
+	udpAddr := &net.UDPAddr{IP: addrs[0].IP, Zone: addrs[0].Zone, Port: port}
 	_ = conn.SetDeadline(time.Time{})
 	return conn, udpAddr, nil
 }
 
 func readSOCKS5Addr(conn net.Conn, atyp byte) (string, error) {
 	switch atyp {
-	case 0x01:
-		buf := make([]byte, 4)
+	case 0x01, 0x04:
+		size := net.IPv4len
+		if atyp == 0x04 {
+			size = net.IPv6len
+		}
+		buf := make([]byte, size)
 		if _, err := io.ReadFull(conn, buf); err != nil {
 			return "", err
 		}

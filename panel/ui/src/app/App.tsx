@@ -6,7 +6,7 @@ import { secondaryTopButtonClass, topButtonClass } from "../controlClasses";
 import { NodePanel } from "../features/nodes/NodePanel";
 import { SettingsPanel } from "../features/settings/SettingsPanel";
 import { errorMessage } from "../lib/format";
-import type { ApiResponse, ConfigForm, PanelState, ThemeMode } from "../types/panel";
+import type { ActiveProbe, ApiResponse, ConfigForm, PanelState, ProbeMode, ThemeMode } from "../types/panel";
 
 const emptyState: PanelState = {
   listen: "",
@@ -36,14 +36,14 @@ function App() {
   const [serverInput, setServerInput] = useState("");
   const [config, setConfig] = useState<ConfigForm>(emptyConfig);
   const [theme, setTheme] = useState<ThemeMode>(() => (localStorage.getItem("turnsocks-theme") as ThemeMode) || "system");
-  const [testing, setTesting] = useState<Set<string>>(() => new Set());
+  const [testing, setTesting] = useState<ActiveProbe | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState<{ message: string; tone: "info" | "danger" }>({ message: "", tone: "info" });
   const [deleteTarget, setDeleteTarget] = useState("");
   const settingsDirty = useRef(false);
   const busyRef = useRef(false);
-  const testingRef = useRef<Set<string>>(new Set());
+  const testController = useRef<AbortController | null>(null);
   const refreshVersion = useRef(0);
   const toastTimer = useRef<number>();
   const deleteDialog = useRef<HTMLDialogElement>(null);
@@ -54,7 +54,10 @@ function App() {
     toastTimer.current = window.setTimeout(() => setToast((prev) => ({ ...prev, message: "" })), 2200);
   }, []);
 
-  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(toastTimer.current);
+    testController.current?.abort();
+  }, []);
 
   useEffect(() => {
     const dialog = deleteDialog.current;
@@ -87,7 +90,7 @@ function App() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (!busyRef.current && testingRef.current.size === 0) {
+      if (!busyRef.current && !testController.current) {
         refresh().catch(() => {});
       }
     }, 5000);
@@ -120,7 +123,7 @@ function App() {
   }
 
   async function run(action: () => Promise<ApiResponse>, refreshAfter = true) {
-    if (busyRef.current) return false;
+    if (busyRef.current || testController.current) return false;
     busyRef.current = true;
     refreshVersion.current++;
     setBusy(true);
@@ -152,37 +155,31 @@ function App() {
     });
   }
 
-  async function testServer(server: string) {
-    if (!server || testingRef.current.has(server)) return;
+  async function testServers(servers: string[], mode: ProbeMode) {
+    if (!servers.length || testController.current || busyRef.current) return;
+    const controller = new AbortController();
+    testController.current = controller;
     refreshVersion.current++;
-    const active = new Set(testingRef.current);
-    active.add(server);
-    testingRef.current = active;
-    setTesting(active);
     try {
-      const result = await testServerRequest(server);
-      setState((prev) => ({
-        ...prev,
-        servers: prev.servers.map((item) => item.raw === server ? { ...item, test: result } : item)
-      }));
-      showToast(result.message || "测试完成", result.ok ? "info" : "danger");
+      for (const server of servers) {
+        controller.signal.throwIfAborted();
+        setTesting({ server, mode });
+        const result = await testServerRequest(server, mode, controller.signal);
+        setState((prev) => ({
+          ...prev,
+          servers: prev.servers.map((item) => item.raw === server ? { ...item, [mode === "check" ? "check" : "test"]: result } : item)
+        }));
+        if (servers.length === 1) showToast(result.message || "检测完成", result.ok ? "info" : "danger");
+      }
+      if (servers.length > 1) showToast("全部检测完成，请查看各节点结果");
     } catch (err) {
-      setState((prev) => ({
-        ...prev,
-        servers: prev.servers.map((item) => item.raw === server ? { ...item, test: { ok: false, message: errorMessage(err), testedAt: new Date().toISOString() } } : item)
-      }));
-      showToast(errorMessage(err), "danger");
+      if (controller.signal.aborted) showToast("检测已停止，已完成的结果已保留");
+      else showToast(errorMessage(err), "danger");
     } finally {
-      const next = new Set(testingRef.current);
-      next.delete(server);
-      testingRef.current = next;
-      setTesting(next);
+      testController.current = null;
+      setTesting(null);
+      refresh().catch(() => {});
     }
-  }
-
-  async function testAllServers() {
-    if (testingRef.current.size > 0) return;
-    for (const server of state.servers) await testServer(server.raw);
   }
 
   async function updateConfig(event: FormEvent) {
@@ -223,7 +220,7 @@ function App() {
     if (server) void run(() => deleteServer(server));
   }
 
-  const locked = busy || testing.size > 0;
+  const locked = busy || testing !== null;
 
   return (
     <div className="min-h-screen p-4 pb-12 md:p-6">
@@ -247,7 +244,7 @@ function App() {
               )}
               {state.service.active ? "代理运行中" : "代理已停止"}
             </span>
-            <button className={topButtonClass} disabled={busy} onClick={() => run(restartProxy)} type="button">
+            <button className={topButtonClass} disabled={locked} onClick={() => run(restartProxy)} type="button">
               <IconRefresh className="h-3.5 w-3.5" />
               重启代理
             </button>
@@ -276,17 +273,17 @@ function App() {
             state={state}
             serverInput={serverInput}
             testing={testing}
-            busy={busy}
             locked={locked}
             onServerInput={setServerInput}
             onAddServer={addServer}
-            onTestServer={testServer}
-            onTestAll={testAllServers}
+            onTestServer={(server, mode) => void testServers([server], mode)}
+            onTestAll={(mode) => void testServers(state.servers.map((server) => server.raw), mode)}
+            onStopTesting={() => testController.current?.abort()}
             onSelectServer={(server) => void run(() => selectServer(server))}
             onDeleteServer={removeServer}
             onUpdateNote={(server, note) => run(() => updateServerNote(server, note))}
           />
-          <SettingsPanel state={state} config={config} busy={busy} onSubmit={updateConfig} onFieldChange={updateConfigField} />
+          <SettingsPanel state={state} config={config} busy={locked} onSubmit={updateConfig} onFieldChange={updateConfigField} />
         </div>
       </div>
 

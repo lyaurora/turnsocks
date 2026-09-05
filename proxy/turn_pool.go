@@ -26,11 +26,13 @@ type turnServerConfig struct {
 }
 
 type turnPool struct {
-	mu        sync.Mutex
-	servers   []turnServerState
-	cooldown  time.Duration
-	statePath string
-	current   string
+	mu               sync.Mutex
+	servers          []turnServerState
+	cooldown         time.Duration
+	statePath        string
+	current          string
+	persistedAddr    string
+	lastFailureWrite time.Time
 }
 
 // A TURN TCP allocation may carry multiple peers, but some servers reject
@@ -81,7 +83,7 @@ func watchTurnConfig(cfg Config) {
 			continue
 		}
 
-		changed, currentChanged, currentAddr, added, removed := cfg.TurnPool.updateServers(servers)
+		changed, added, removed := cfg.TurnPool.updateServers(servers)
 		if !changed {
 			continue
 		}
@@ -90,11 +92,6 @@ func watchTurnConfig(cfg Config) {
 		}
 		if cfg.UDPPrewarm != nil {
 			cfg.UDPPrewarm.closeIfNotAllowed(servers)
-		}
-		if currentChanged {
-			if err := writeRuntimeState(cfg.StatePath, currentAddr); err != nil {
-				log.Printf("write runtime state failed: %v", err)
-			}
 		}
 		log.Printf("TURN servers reloaded: %d total, +%d -%d", len(servers), added, removed)
 		go prewarmTCPAllocation(cfg)
@@ -166,10 +163,17 @@ func newTurnPool(servers []turnServerConfig, cooldown time.Duration, statePath s
 	for _, server := range servers {
 		p.servers = append(p.servers, turnServerState{Server: server})
 	}
+	state := readRuntimeState(statePath)
+	p.persistedAddr = state.CurrentAddr
+	if len(servers) > 0 {
+		initial := initialTurnServer(servers, state)
+		p.current = initial.String()
+		p.writeCurrentLocked(initial.Addr, "启动选择节点")
+	}
 	return p
 }
 
-func (p *turnPool) updateServers(servers []turnServerConfig) (changed bool, currentChanged bool, currentAddr string, added int, removed int) {
+func (p *turnPool) updateServers(servers []turnServerConfig) (changed bool, added int, removed int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -210,29 +214,27 @@ func (p *turnPool) updateServers(servers []turnServerConfig) (changed bool, curr
 		}
 	}
 	if !changed {
-		return false, false, "", 0, 0
+		return false, 0, 0
 	}
 
-	oldCurrent := p.current
 	p.servers = newStates
 	if len(newStates) == 0 {
 		p.current = ""
-		return true, oldCurrent != "", "", added, removed
+		p.writeCurrentLocked("", "节点列表已清空")
+		return true, added, removed
 	}
 	if p.current == "" {
 		p.current = newStates[0].Server.String()
-		currentChanged = true
-		currentAddr = newStates[0].Server.Addr
-		return true, currentChanged, currentAddr, added, removed
+		p.writeCurrentLocked(newStates[0].Server.Addr, "新增首个节点")
+		return true, added, removed
 	}
 	if _, ok := newKeys[p.current]; ok {
-		return true, false, "", added, removed
+		return true, added, removed
 	}
 
 	p.current = newStates[0].Server.String()
-	currentChanged = oldCurrent != p.current
-	currentAddr = newStates[0].Server.Addr
-	return true, currentChanged, currentAddr, added, removed
+	p.writeCurrentLocked(newStates[0].Server.Addr, "当前节点已移除，改用列表中的首个节点")
+	return true, added, removed
 }
 
 func (p *turnPool) candidates() []turnServerConfig {
@@ -279,24 +281,24 @@ func preferCurrentFirst(servers []turnServerConfig, current string) []turnServer
 
 func (p *turnPool) markSuccess(server turnServerConfig) {
 	p.mu.Lock()
-	currentChanged := false
+	defer p.mu.Unlock()
 	for i := range p.servers {
 		if p.servers[i].Server.String() == server.String() {
 			p.servers[i].FailedUntil = time.Time{}
 			p.servers[i].LastError = ""
 			if p.current != server.String() {
+				reason := "新连接使用其他可用节点"
+				for _, state := range p.servers {
+					if state.Server.String() == p.current && state.LastError != "" &&
+						(time.Now().Before(state.FailedUntil) || time.Now().Before(state.UDPFailedUntil)) {
+						reason = "原节点连接失败，自动切换：" + state.LastError
+						break
+					}
+				}
 				p.current = server.String()
-				currentChanged = true
+				p.writeCurrentLocked(server.Addr, reason)
 			}
-			break
-		}
-	}
-	statePath := p.statePath
-	p.mu.Unlock()
-
-	if currentChanged {
-		if err := writeRuntimeState(statePath, server.Addr); err != nil {
-			log.Printf("write runtime state failed: %v", err)
+			return
 		}
 	}
 }
@@ -308,7 +310,8 @@ func (p *turnPool) markFailure(server turnServerConfig, err error) {
 	for i := range p.servers {
 		if p.servers[i].Server.String() == server.String() {
 			p.servers[i].FailedUntil = time.Now().Add(p.cooldown)
-			p.servers[i].LastError = err.Error()
+			p.servers[i].LastError = p.cleanError(err)
+			p.recordFailureLocked(server.Addr, "TURN TCP", err)
 			return
 		}
 	}
@@ -362,7 +365,8 @@ func (p *turnPool) markUDPFailure(server turnServerConfig, err error) {
 	for i := range p.servers {
 		if p.servers[i].Server.String() == server.String() {
 			p.servers[i].UDPFailedUntil = time.Now().Add(p.cooldown)
-			p.servers[i].LastError = "udp: " + err.Error()
+			p.servers[i].LastError = "udp: " + p.cleanError(err)
+			p.recordFailureLocked(server.Addr, "TURN UDP", err)
 			return
 		}
 	}

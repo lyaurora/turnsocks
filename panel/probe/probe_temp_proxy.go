@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func measureTCPConnect(addr string) Metric {
+func measureTCPConnect(ctx context.Context, addr string) Metric {
 	const attempts = 4
 	const timeout = 2 * time.Second
 	const interval = 150 * time.Millisecond
@@ -22,8 +22,11 @@ func measureTCPConnect(addr string) Metric {
 	var samples []float64
 	var lastErr error
 	for i := 0; i < attempts; i++ {
+		if ctx.Err() != nil {
+			return Metric{Message: ctx.Err().Error()}
+		}
 		start := time.Now()
-		conn, err := net.DialTimeout("tcp", addr, timeout)
+		conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", addr)
 		if err != nil {
 			lastErr = err
 		} else {
@@ -31,13 +34,20 @@ func measureTCPConnect(addr string) Metric {
 			samples = append(samples, elapsedMS(start))
 		}
 		if i+1 < attempts {
-			time.Sleep(interval)
+			select {
+			case <-ctx.Done():
+				return Metric{Message: ctx.Err().Error()}
+			case <-time.After(interval):
+			}
 		}
 	}
 	return metricFromSamples(samples, attempts, "TCP 连接失败", lastErr)
 }
 
 func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (string, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	bin, err := findTurnsocksBinary(r.ConfigPath)
 	if err != nil {
 		return "", nil, err
@@ -50,8 +60,12 @@ func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (
 		return "", nil, err
 	}
 	listen := "127.0.0.1:" + strconv.Itoa(port)
-	statePath := filepath.Join(os.TempDir(), fmt.Sprintf("turnsocks-panel-test-%d.state", time.Now().UnixNano()))
-	configPath := statePath + ".env"
+	tempDir, err := os.MkdirTemp("", "turnsocks-panel-test-")
+	if err != nil {
+		return "", nil, err
+	}
+	statePath := filepath.Join(tempDir, "state")
+	configPath := filepath.Join(tempDir, "config.env")
 
 	procCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(procCtx, bin,
@@ -68,47 +82,51 @@ func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (
 		}
 		return cmd.Process.Signal(os.Interrupt)
 	}
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
 		cancel()
+		_ = os.RemoveAll(tempDir)
 		return "", nil, err
 	}
 
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	done := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(done)
+	}()
 	cleanup := func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			<-done
-		}
-		_ = os.Remove(statePath)
-		_ = os.Remove(configPath)
+		<-done
+		_ = os.RemoveAll(tempDir)
 	}
 
-	deadline := time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) {
+	startCtx, cancelStart := context.WithTimeout(ctx, 4*time.Second)
+	defer cancelStart()
+	for startCtx.Err() == nil {
 		select {
-		case err := <-done:
-			cancel()
-			_ = os.Remove(statePath)
-			_ = os.Remove(configPath)
-			return "", nil, fmt.Errorf("临时 turnsocks 已退出：%w", err)
+		case <-done:
+			cleanup()
+			return "", nil, fmt.Errorf("临时 turnsocks 已退出：%v", waitErr)
 		default:
 		}
-		conn, err := net.DialTimeout("tcp", listen, 200*time.Millisecond)
+		conn, err := (&net.Dialer{Timeout: 200 * time.Millisecond}).DialContext(startCtx, "tcp", listen)
 		if err == nil {
 			_ = conn.Close()
 			return listen, cleanup, nil
 		}
-		time.Sleep(120 * time.Millisecond)
+		select {
+		case <-startCtx.Done():
+		case <-done:
+		case <-time.After(120 * time.Millisecond):
+		}
 	}
 	cleanup()
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	return "", nil, errors.New("临时 turnsocks 启动超时")
 }
 

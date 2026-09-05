@@ -30,10 +30,12 @@ export type SpeedMetric = {
 };
 
 export type ServerTest = {
+  mode?: ProbeMode;
   ok?: boolean;
   message?: string;
   addr?: string;
   tcpConnect?: TestMetric;
+  socksTcp?: TestCheck;
   socksUdp?: TestCheck;
   singleThread?: SpeedMetric;
   multiThread?: SpeedMetric;
@@ -41,6 +43,9 @@ export type ServerTest = {
   downloadBytes?: number;
   testedAt?: string;
 };
+
+export type ProbeMode = "check" | "speed";
+export type ActiveProbe = { server: string; mode: ProbeMode };
 
 export type ServerInfo = {
   raw: string;
@@ -51,6 +56,7 @@ export type ServerInfo = {
   current: boolean;
   default: boolean;
   test?: ServerTest;
+  check?: ServerTest;
 };
 
 export type PanelState = {
@@ -60,6 +66,10 @@ export type PanelState = {
   panelAuthEnabled: boolean;
   servers: ServerInfo[];
   service: ServiceInfo;
+  runtime?: {
+    last_failure?: { at: string; addr?: string; stage: string; message: string };
+    last_switch?: { at: string; from?: string; to: string; reason: string };
+  };
 };
 
 export type ApiResponse = {

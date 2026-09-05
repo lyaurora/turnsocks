@@ -75,6 +75,9 @@ func resolveDoHOnce(queryHost string, cfg Config) (net.IP, error) {
 	dnsLookupMu.Unlock()
 
 	ip, err := queryDoH(queryHost, cfg)
+	if err != nil {
+		cfg.TurnPool.recordFailure("", "DNS 解析", err)
+	}
 	call.result = dnsLookupResult{IP: ip, Err: err}
 
 	dnsLookupMu.Lock()

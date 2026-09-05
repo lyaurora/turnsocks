@@ -6,6 +6,7 @@ config.env
 *.log
 turnsocks.state*
 turnsocks.tests.json*
+turnsocks.checks.json*
 logs/
 *.pid
 *.sock

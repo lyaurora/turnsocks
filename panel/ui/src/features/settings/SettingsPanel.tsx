@@ -2,6 +2,7 @@ import type { FormEvent } from "react";
 import { Chip } from "../../components/Chip";
 import { Switch } from "../../components/Switch";
 import { inputClass, labelClass, labelTextClass, primaryButtonClass } from "../../controlClasses";
+import { formatTestTime } from "../../lib/format";
 import type { ConfigForm, PanelState } from "../../types/panel";
 
 type Props = {
@@ -13,6 +14,8 @@ type Props = {
 };
 
 export function SettingsPanel({ state, config, busy, onSubmit, onFieldChange }: Props) {
+  const failure = state.runtime?.last_failure;
+  const lastSwitch = state.runtime?.last_switch;
   return (
     <aside className="flex flex-col gap-5">
       <section className="shell-window overflow-hidden">
@@ -36,6 +39,35 @@ export function SettingsPanel({ state, config, busy, onSubmit, onFieldChange }: 
             <div className="break-all font-mono text-[13px] leading-[1.55] text-[hsl(var(--foreground))]">{state.doh || "-"}</div>
           </div>
         </div>
+      </section>
+
+      <section className="shell-window overflow-hidden">
+        <div className="border-b border-[hsl(var(--border))] px-4 py-3.5 md:px-[18px]">
+          <h2 className="text-[14.5px] font-semibold text-[hsl(var(--foreground))]">最近事件</h2>
+          <p className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">历史记录，当前连通性可通过节点检查确认</p>
+        </div>
+        <dl className="grid gap-4 p-4 text-[12px] md:p-[18px]">
+          <div>
+            <dt className="mb-1 font-medium text-[hsl(var(--muted-foreground))]">最近记录的失败</dt>
+            <dd className="space-y-1 break-all">
+              {failure ? <>
+                <div className="text-[hsl(var(--danger))]">{failure.stage}{failure.addr && ` · ${failure.addr}`}</div>
+                <p>{failure.message}</p>
+                <time className="block text-[11px] text-[hsl(var(--muted-foreground))]" dateTime={failure.at}>{formatTestTime(failure.at)}</time>
+              </> : "暂无记录"}
+            </dd>
+          </div>
+          <div className="border-t border-[hsl(var(--border))] pt-3">
+            <dt className="mb-1 font-medium text-[hsl(var(--muted-foreground))]">最近节点切换</dt>
+            <dd className="space-y-1 break-all">
+              {lastSwitch ? <>
+                <div className="font-mono">{lastSwitch.from && `${lastSwitch.from} → `}{lastSwitch.to || "无节点"}</div>
+                <p>{lastSwitch.reason}</p>
+                <time className="block text-[11px] text-[hsl(var(--muted-foreground))]" dateTime={lastSwitch.at}>{formatTestTime(lastSwitch.at)}</time>
+              </> : "暂无记录"}
+            </dd>
+          </div>
+        </dl>
       </section>
 
       <section className="shell-window overflow-hidden">
