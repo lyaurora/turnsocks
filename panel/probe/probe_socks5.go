@@ -1,13 +1,13 @@
 package probe
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -15,108 +15,13 @@ import (
 
 func httpClientViaSOCKS(proxyAddr string, timeout time.Duration) *http.Client {
 	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           socks5DialContext(proxyAddr, 8*time.Second),
+		Proxy:                 http.ProxyURL(&url.URL{Scheme: "socks5", Host: proxyAddr}),
+		DialContext:           (&net.Dialer{Timeout: 8 * time.Second}).DialContext,
 		DisableCompression:    true,
 		TLSHandshakeTimeout:   8 * time.Second,
 		ResponseHeaderTimeout: 12 * time.Second,
 	}
 	return &http.Client{Timeout: timeout, Transport: transport}
-}
-
-func socks5DialContext(proxyAddr string, timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
-	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
-		if network != "tcp" {
-			return nil, fmt.Errorf("unsupported network %s", network)
-		}
-		dialer := net.Dialer{Timeout: timeout}
-		conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
-		if err != nil {
-			return nil, err
-		}
-		if err := socks5Connect(conn, addr, timeout); err != nil {
-			_ = conn.Close()
-			return nil, err
-		}
-		return conn, nil
-	}
-}
-
-func socks5Connect(conn net.Conn, target string, timeout time.Duration) error {
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return err
-	}
-	defer conn.SetDeadline(time.Time{})
-	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-		return err
-	}
-	buf := make([]byte, 260)
-	if _, err := io.ReadFull(conn, buf[:2]); err != nil {
-		return err
-	}
-	if buf[0] != 0x05 || buf[1] != 0x00 {
-		return errors.New("SOCKS5 无需认证模式被拒绝")
-	}
-
-	host, port, err := net.SplitHostPort(target)
-	if err != nil {
-		return err
-	}
-	portNum, err := strconv.Atoi(port)
-	if err != nil || portNum <= 0 || portNum > 65535 {
-		return fmt.Errorf("invalid target port %q", port)
-	}
-
-	req := []byte{0x05, 0x01, 0x00}
-	if ip := net.ParseIP(host); ip != nil {
-		ip4 := ip.To4()
-		if ip4 == nil {
-			return errors.New("IPv6 target is not supported")
-		}
-		req = append(req, 0x01)
-		req = append(req, ip4...)
-	} else {
-		if len(host) > 255 {
-			return errors.New("target host too long")
-		}
-		req = append(req, 0x03, byte(len(host)))
-		req = append(req, host...)
-	}
-	req = append(req, byte(portNum>>8), byte(portNum))
-	if _, err := conn.Write(req); err != nil {
-		return err
-	}
-	if _, err := io.ReadFull(conn, buf[:4]); err != nil {
-		return err
-	}
-	if buf[0] != 0x05 {
-		return errors.New("invalid SOCKS5 response")
-	}
-	if buf[1] != 0x00 {
-		return fmt.Errorf("SOCKS5 connect failed: 0x%02x", buf[1])
-	}
-	return readSOCKS5Bind(conn, buf[3])
-}
-
-func readSOCKS5Bind(conn net.Conn, atyp byte) error {
-	var skip int
-	switch atyp {
-	case 0x01:
-		skip = 4
-	case 0x03:
-		ln := []byte{0}
-		if _, err := io.ReadFull(conn, ln); err != nil {
-			return err
-		}
-		skip = int(ln[0])
-	case 0x04:
-		skip = 16
-	default:
-		return fmt.Errorf("unsupported SOCKS5 bind atyp 0x%02x", atyp)
-	}
-	rest := make([]byte, skip+2)
-	_, err := io.ReadFull(conn, rest)
-	return err
 }
 
 func testSOCKSUDP(proxyAddr string) Check {

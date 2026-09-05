@@ -915,6 +915,10 @@ func (s *udpSession) readLocalUDPLoop() {
 			if s.cfg.LogVerbose {
 				log.Printf("CreatePermission failed %s: %v", ip.String(), err)
 			}
+			if isTurnServerFailure(err) {
+				s.fail()
+				return
+			}
 			continue
 		}
 
@@ -1041,7 +1045,7 @@ func parseSocksUDPPacket(pkt []byte) (net.IP, string, int, []byte, error) {
 func (s *udpSession) ensurePermission(ip net.IP) error {
 	key, ok := permissionKey(ip)
 	if !ok {
-		return errors.New("only IPv4 is supported")
+		return turnPeerError(errors.New("only IPv4 is supported"))
 	}
 
 	s.permissionMu.Lock()
@@ -1078,7 +1082,12 @@ func (s *udpSession) ensurePermission(ip net.IP) error {
 			}
 		}
 		code, reason := getErrorCode(res)
-		return fmt.Errorf("permission error %d %s", code, reason)
+		err = fmt.Errorf("permission error %d %s", code, reason)
+		// A rejected peer or full permission table does not invalidate the allocation.
+		if code == 403 || code == 443 || code == 508 {
+			return turnPeerError(err)
+		}
+		return err
 	}
 	return fmt.Errorf("permission error %d Stale Nonce", staleNonceCode)
 }

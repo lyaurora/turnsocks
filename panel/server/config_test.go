@@ -161,6 +161,30 @@ func TestUpdateServerNote(t *testing.T) {
 	}
 }
 
+func TestAddServerRejectsInvalidInputWithoutChangingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.env")
+	original := []byte("LISTEN=127.0.0.1:1080\nTURN_SERVERS=good.example:3478\nDOH=https://cloudflare-dns.com/dns-query\n")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{configPath: path}
+	for _, server := range []string{"user:@turn.example:3478", "turn,example:3478", "turn.example\nPANEL_PASSWORD=demo:3478"} {
+		body, err := json.Marshal(serverRequest{Server: server})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := httptest.NewRecorder()
+		a.handleAddServer(res, httptest.NewRequest(http.MethodPost, "/api/servers/add", bytes.NewReader(body)))
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("invalid node accepted: %q, status=%d", server, res.Code)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(raw, original) {
+			t.Fatalf("rejected node changed config: %v", err)
+		}
+	}
+}
+
 func TestConfigApplyRollback(t *testing.T) {
 	for _, operation := range []string{"settings", "select"} {
 		for _, tc := range []struct {

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -540,6 +541,100 @@ func TestUDPPermissionRetriesStaleNonce(t *testing.T) {
 	}
 	if got := turnConn.writeCount.Load(); got != 2 {
 		t.Fatalf("cached permission sent another request: %d writes", got)
+	}
+}
+
+func TestUDPPermissionFailureClosesOnlyUnusableSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		code     stun.ErrorCode
+		wantLive bool
+	}{
+		{name: "expired allocation", code: stun.CodeAllocMismatch},
+		{name: "authentication rejected", code: stun.CodeUnauthorized},
+		{name: "request timeout"},
+		{name: "forbidden peer", code: stun.CodeForbidden, wantLive: true},
+		{name: "peer address family", code: stun.CodePeerAddrFamilyMismatch, wantLive: true},
+		{name: "permission capacity", code: stun.CodeInsufficientCapacity, wantLive: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			control, peer := net.Pipe()
+			defer peer.Close()
+			turnConn := &recordingSTUNConn{}
+			s := &udpSession{
+				cfg: Config{Timeout: time.Second}, clientTCP: control, localUDP: local,
+				turnConn: turnConn, turnNetwork: "udp", closed: make(chan struct{}),
+				pending: make(map[string]chan *stun.Message),
+				permissions: map[[4]byte]time.Time{
+					{192, 0, 2, 2}: time.Now().Add(time.Minute),
+				},
+			}
+			forwarded := make(chan []byte, 1)
+			turnConn.onWriteRaw = func(raw []byte) { forwarded <- append([]byte(nil), raw...) }
+			turnConn.onWrite = func(req *stun.Message, _ int) {
+				if req.Type.Method != MethodCreatePermission || tc.code == 0 {
+					return
+				}
+				res := stun.New()
+				res.Type = stun.MessageType{Method: MethodCreatePermission, Class: stun.ClassErrorResponse}
+				res.TransactionID = req.TransactionID
+				_ = (stun.ErrorCodeAttribute{Code: tc.code}).AddTo(res)
+				s.pendingMu.Lock()
+				ch := s.pending[s.txIDKey(req.TransactionID)]
+				s.pendingMu.Unlock()
+				ch <- res
+			}
+			done := make(chan struct{})
+			go func() { defer close(done); s.readLocalUDPLoop() }()
+			defer func() { s.fail(); <-done }()
+			client, err := net.DialUDP("udp4", nil, local.LocalAddr().(*net.UDPAddr))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			targets := []byte{1}
+			if tc.wantLive {
+				targets = append(targets, 2)
+			}
+			for _, last := range targets {
+				if _, err := client.Write([]byte{0, 0, 0, 1, 192, 0, 2, last, 0, 53, last}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.wantLive {
+				select {
+				case raw := <-forwarded:
+					msg, err := decodeSTUNMessage(raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					data, err := msg.Get(AttrData)
+					if err != nil || !bytes.Equal(data, []byte{2}) || s.isClosed() {
+						t.Fatalf("unrelated peer stopped forwarding: %v, %v", data, err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("peer refusal blocked an existing permission")
+				}
+				return
+			}
+			_ = peer.SetReadDeadline(time.Now().Add(7 * time.Second))
+			var buf [1]byte
+			if _, err := peer.Read(buf[:]); !errors.Is(err, io.EOF) {
+				t.Fatalf("unusable session left SOCKS control open: %v", err)
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("UDP reader did not stop")
+			}
+			if !turnConn.closed.Load() || len(forwarded) != 0 {
+				t.Fatal("unusable TURN session was still used")
+			}
+		})
 	}
 }
 

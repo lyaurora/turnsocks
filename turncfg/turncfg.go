@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 type Server struct {
@@ -20,6 +21,9 @@ func ParseServer(raw string) (Server, error) {
 	if raw == "" {
 		return Server{}, errors.New("节点不能为空")
 	}
+	if strings.Contains(raw, ",") || strings.IndexFunc(raw, unicode.IsControl) >= 0 {
+		return Server{}, errors.New("节点不能包含逗号、换行或控制字符")
+	}
 
 	server := Server{Raw: raw}
 	addr := raw
@@ -27,11 +31,8 @@ func ParseServer(raw string) (Server, error) {
 		cred := raw[:at]
 		addr = raw[at+1:]
 		user, pass, ok := strings.Cut(cred, ":")
-		if !ok || user == "" {
+		if !ok || user == "" || pass == "" {
 			return Server{}, errors.New("鉴权格式应为 user:pass@host:port")
-		}
-		if strings.ContainsAny(cred, ",\r\n") {
-			return Server{}, errors.New("TURN 用户名和密码不能包含逗号或换行")
 		}
 		server.Username = user
 		server.Password = pass
@@ -42,6 +43,9 @@ func ParseServer(raw string) (Server, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || host == "" || port == "" {
 		return Server{}, errors.New("节点格式应为 host:port")
+	}
+	if strings.ContainsAny(host, "/\\?#\"'") || strings.IndexFunc(host, unicode.IsSpace) >= 0 {
+		return Server{}, errors.New("节点主机名不能包含空白或 URL 特殊字符")
 	}
 	portNum, err := strconv.Atoi(port)
 	if err != nil || portNum <= 0 || portNum > 65535 {
