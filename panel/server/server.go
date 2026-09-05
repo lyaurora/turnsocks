@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"path/filepath"
 	"time"
+
+	"github.com/lyaurora/turnsocks/turncfg"
 )
 
 func Run(opts Options) error {
@@ -14,15 +16,15 @@ func Run(opts Options) error {
 		listen = DefaultPanelListen
 	}
 
-	cfgPath := absPath(opts.ConfigPath)
+	cfgPath := turncfg.AbsPath(opts.ConfigPath)
 	stPath := opts.StatePath
 	if stPath == "" {
-		stPath = defaultStatePath(cfgPath)
+		stPath = filepath.Join(filepath.Dir(cfgPath), "turnsocks.state")
 	}
 	a := &app{
 		configPath: cfgPath,
-		statePath:  absPath(stPath),
-		testPath:   absPath(defaultTestResultsPath(cfgPath)),
+		statePath:  turncfg.AbsPath(stPath),
+		testPath:   turncfg.AbsPath(filepath.Join(filepath.Dir(cfgPath), "turnsocks.tests.json")),
 		checkPath:  filepath.Join(filepath.Dir(cfgPath), "turnsocks.checks.json"),
 		ui:         opts.UI,
 	}
@@ -66,5 +68,5 @@ func (panel *app) handler(authStore *panelAuthStore) http.Handler {
 }
 
 func DefaultConfigPath() string {
-	return defaultConfigPath()
+	return turncfg.DefaultConfigPath()
 }

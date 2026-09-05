@@ -4,44 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/lyaurora/turnsocks/runtimestate"
 	"github.com/lyaurora/turnsocks/turncfg"
 )
-
-func defaultConfigPath() string {
-	exe, err := os.Executable()
-	if err == nil && exe != "" {
-		return filepath.Join(filepath.Dir(exe), "config.env")
-	}
-	return "config.env"
-}
-
-func defaultStatePath(configPath string) string {
-	if configPath != "" {
-		return filepath.Join(filepath.Dir(configPath), "turnsocks.state")
-	}
-	return "turnsocks.state"
-}
-
-func defaultTestResultsPath(configPath string) string {
-	if configPath != "" {
-		return filepath.Join(filepath.Dir(configPath), "turnsocks.tests.json")
-	}
-	return "turnsocks.tests.json"
-}
-
-func absPath(path string) string {
-	if path == "" || filepath.IsAbs(path) {
-		return path
-	}
-	if abs, err := filepath.Abs(path); err == nil {
-		return abs
-	}
-	return path
-}
 
 func readProxyConfig(path string) (proxyConfig, error) {
 	raw, err := os.ReadFile(path)
@@ -54,12 +21,11 @@ func readProxyConfig(path string) (proxyConfig, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		key, value, ok := strings.Cut(line, "=")
+		key, value, ok := turncfg.ParseEnvLine(line)
 		if !ok {
 			return proxyConfig{}, fmt.Errorf("config.env 第 %d 行格式错误", lineNo+1)
 		}
-		value = turncfg.DecodeEnvValue(value)
-		switch strings.TrimSpace(key) {
+		switch key {
 		case "LISTEN":
 			if value != "" {
 				cfg.Listen = value

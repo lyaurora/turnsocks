@@ -3,10 +3,14 @@ package turncfg
 import "testing"
 
 func TestEnvValueQuotes(t *testing.T) {
-	for _, value := range []string{"", "plain", "demo'", "'quoted'", "\"quoted\"", "pa\\ss\"'", " spaced ", "a\tb", "中文", "\\$\\\x60\\n\\t"} {
-		if got := DecodeEnvValue(EncodeEnvValue(value)); got != value {
+	for _, value := range []string{"", "plain", "a=b", "demo'", "'quoted'", "\"quoted\"", "pa\\ss\"'", " spaced ", "a\tb", "中文", "\\$\\\x60\\n\\t"} {
+		key, got, ok := ParseEnvLine("  VALUE = " + EncodeEnvValue(value))
+		if !ok || key != "VALUE" || got != value {
 			t.Fatalf("round trip %q = %q", value, got)
 		}
+	}
+	if _, _, ok := ParseEnvLine("VALUE"); ok {
+		t.Fatal("env line without '=' accepted")
 	}
 	for encoded, want := range map[string]string{
 		" 'plain' ":        "plain",

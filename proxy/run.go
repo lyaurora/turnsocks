@@ -4,16 +4,20 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/lyaurora/turnsocks/turncfg"
 )
 
 func Run() {
@@ -21,9 +25,9 @@ func Run() {
 	var cpuProfile string
 	var memProfile string
 
-	configPath := defaultConfigPath()
+	configPath := turncfg.DefaultConfigPath()
 	configPath = preFlagValue("config", getenv("CONFIG_PATH", configPath))
-	configPath = absPath(configPath)
+	configPath = turncfg.AbsPath(configPath)
 	if err := loadEnvFile(configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Fatalf("load env config failed: %v", err)
 	}
@@ -53,11 +57,11 @@ func Run() {
 	if cfg.TurnCooldown <= 0 {
 		log.Fatal("turn-cooldown must be greater than 0")
 	}
-	cfg.ConfigPath = absPath(cfg.ConfigPath)
+	cfg.ConfigPath = turncfg.AbsPath(cfg.ConfigPath)
 	if cfg.StatePath == "" {
-		cfg.StatePath = defaultStatePath(cfg.ConfigPath)
+		cfg.StatePath = filepath.Join(filepath.Dir(cfg.ConfigPath), "turnsocks.state")
 	}
-	cfg.StatePath = absPath(cfg.StatePath)
+	cfg.StatePath = turncfg.AbsPath(cfg.StatePath)
 	var err error
 	cfg.TurnServers, err = loadTurnServers(cfg)
 	if err != nil {
@@ -84,10 +88,12 @@ func Run() {
 		log.Printf("TURN servers: %s", strings.Join(turnServerAddrs(cfg.TurnServers), ", "))
 	}
 	log.Printf("TURN auth: per-server inline only")
-	proxy := newProxyController(cfg)
-	if err := proxy.start(); err != nil {
+	listener, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
 		log.Fatalf("SOCKS5 start failed: %v", err)
 	}
+	go acceptLoop(listener, cfg)
+	log.Printf("SOCKS5 listening on %s", cfg.Listen)
 	go prewarmTCPAllocation(cfg)
 	go prewarmUDPAllocation(cfg)
 	go watchTurnConfig(cfg)
@@ -97,7 +103,7 @@ func Run() {
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	<-signals
-	proxy.stop()
+	_ = listener.Close()
 	cfg.UDPPrewarm.close()
 	cfg.UDPSessions.closeAll()
 }

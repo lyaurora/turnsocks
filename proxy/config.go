@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,31 +34,6 @@ func getenv(k, def string) string {
 		return def
 	}
 	return v
-}
-
-func defaultConfigPath() string {
-	exe, err := os.Executable()
-	if err == nil && exe != "" {
-		return filepath.Join(filepath.Dir(exe), "config.env")
-	}
-	return "config.env"
-}
-
-func defaultStatePath(configPath string) string {
-	if configPath != "" {
-		return filepath.Join(filepath.Dir(configPath), "turnsocks.state")
-	}
-	return "turnsocks.state"
-}
-
-func absPath(path string) string {
-	if path == "" || filepath.IsAbs(path) {
-		return path
-	}
-	if abs, err := filepath.Abs(path); err == nil {
-		return abs
-	}
-	return path
 }
 
 func preFlagValue(name, def string) string {
@@ -95,18 +69,16 @@ func loadEnvFile(path string) error {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		key, value, ok := strings.Cut(line, "=")
+		key, value, ok := turncfg.ParseEnvLine(line)
 		if !ok {
 			return fmt.Errorf("invalid env line %d", lineNo+1)
 		}
-		key = strings.TrimSpace(key)
 		if key == "" {
 			return fmt.Errorf("empty env key on line %d", lineNo+1)
 		}
 		if os.Getenv(key) != "" {
 			continue
 		}
-		value = turncfg.DecodeEnvValue(value)
 		if err := os.Setenv(key, value); err != nil {
 			return err
 		}
@@ -124,14 +96,14 @@ func readEnvFileValue(path string, wantKey string) (string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		key, value, ok := strings.Cut(line, "=")
+		key, value, ok := turncfg.ParseEnvLine(line)
 		if !ok {
 			return "", fmt.Errorf("invalid env line %d", lineNo+1)
 		}
-		if strings.TrimSpace(key) != wantKey {
+		if key != wantKey {
 			continue
 		}
-		return turncfg.DecodeEnvValue(value), nil
+		return value, nil
 	}
 	return "", nil
 }

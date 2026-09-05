@@ -280,13 +280,8 @@ func (c *tcpSTUNConn) readMessageOrData(timeout time.Duration) (*stun.Message, t
 }
 
 func (c *tcpSTUNConn) writeMessage(m *stun.Message, timeout time.Duration) error {
-	if timeout > 0 {
-		if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
-			return err
-		}
-		defer c.conn.SetWriteDeadline(time.Time{})
-	}
-	return writeSTUNMessage(c.conn, m)
+	m.WriteHeader()
+	return c.writeRaw(m.Raw, timeout)
 }
 
 func (c *tcpSTUNConn) writeRaw(raw []byte, timeout time.Duration) error {
@@ -354,21 +349,8 @@ func (c *udpSTUNConn) readMessageOrData(timeout time.Duration) (*stun.Message, t
 }
 
 func (c *udpSTUNConn) writeMessage(m *stun.Message, timeout time.Duration) error {
-	if timeout > 0 {
-		if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
-			return err
-		}
-		defer c.conn.SetWriteDeadline(time.Time{})
-	}
 	m.WriteHeader()
-	n, err := c.conn.Write(m.Raw)
-	if err != nil {
-		return err
-	}
-	if n != len(m.Raw) {
-		return io.ErrShortWrite
-	}
-	return nil
+	return c.writeRaw(m.Raw, timeout)
 }
 
 func (c *udpSTUNConn) writeRaw(raw []byte, timeout time.Duration) error {
@@ -829,7 +811,7 @@ func (s *udpSession) handleUDPData(data turnUDPData) {
 		return
 	}
 
-	pkt := s.buildSocksUDPIPv4Raw(data.ip4, data.port, data.payload)
+	pkt := s.buildSocksUDPIPv4(data.ip4[:], data.port, data.payload)
 	_, _ = s.localUDP.WriteToUDP(pkt, caddr)
 }
 
@@ -896,22 +878,6 @@ func (s *udpSession) buildSocksUDPIPv4(ip net.IP, port int, payload []byte) []by
 	pkt[2] = 0
 	pkt[3] = 0x01
 	copy(pkt[4:8], ip4)
-	binary.BigEndian.PutUint16(pkt[8:10], uint16(port))
-	copy(pkt[10:], payload)
-	return pkt
-}
-
-func (s *udpSession) buildSocksUDPIPv4Raw(ip4 [4]byte, port int, payload []byte) []byte {
-	size := 10 + len(payload)
-	if cap(s.socksUDPBuf) < size {
-		s.socksUDPBuf = make([]byte, size)
-	}
-	pkt := s.socksUDPBuf[:size]
-	pkt[0] = 0
-	pkt[1] = 0
-	pkt[2] = 0
-	pkt[3] = 0x01
-	copy(pkt[4:8], ip4[:])
 	binary.BigEndian.PutUint16(pkt[8:10], uint16(port))
 	copy(pkt[10:], payload)
 	return pkt

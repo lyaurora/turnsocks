@@ -125,19 +125,71 @@ func TestAcceptLoopRecoversAfterError(t *testing.T) {
 		accepted: make(chan struct{}),
 		closed:   make(chan struct{}),
 	}
-	p := &proxyController{
-		cfg:     Config{Timeout: time.Second},
-		ln:      ln,
-		running: true,
-	}
-
-	go p.acceptLoop(ln)
+	defer ln.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		acceptLoop(ln, Config{Timeout: time.Second})
+	}()
 	select {
 	case <-ln.accepted:
 	case <-time.After(time.Second):
 		t.Fatal("accept loop did not recover after an error")
 	}
-	p.stop()
+	_ = ln.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("accept loop did not stop after listener close")
+	}
+}
+
+func TestSTUNMessageWriteTimeoutAndHeader(test *testing.T) {
+	for _, transport := range []string{"tcp", "udp"} {
+		test.Run(transport, func(test *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+			var writer stunConn = &tcpSTUNConn{conn: client}
+			if transport == "udp" {
+				writer = &udpSTUNConn{conn: client}
+			}
+			message := stun.New()
+			message.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
+			message.TransactionID = stun.NewTransactionID()
+			if err := writer.writeMessage(message, 10*time.Millisecond); !isTimeoutError(err) {
+				test.Fatalf("blocked write = %v, want timeout", err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_ = server.SetReadDeadline(time.Now().Add(time.Second))
+				received, err := readSTUNMessage(server)
+				if err == nil && (received.Type != message.Type || received.TransactionID != message.TransactionID) {
+					err = errors.New("STUN header changed during write")
+				}
+				done <- err
+			}()
+			if err := writer.writeMessage(message, 0); err != nil {
+				test.Fatalf("write after timeout = %v", err)
+			}
+			if err := <-done; err != nil {
+				test.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSocksUDPIPv4Packet(test *testing.T) {
+	session := &udpSession{}
+	for _, address := range []net.IP{{192, 0, 2, 1}, net.IPv4(192, 0, 2, 1)} {
+		for _, payload := range [][]byte{bytes.Repeat([]byte{0xa5}, 64), {7}, nil} {
+			packet := session.buildSocksUDPIPv4(address, 5353, payload)
+			want := append([]byte{0, 0, 0, 1, 192, 0, 2, 1, 0x14, 0xe9}, payload...)
+			if !bytes.Equal(packet, want) {
+				test.Fatalf("UDP packet = %x, want %x", packet, want)
+			}
+		}
+	}
 }
 
 func TestUDPSessionCloseReleasesAllocation(t *testing.T) {

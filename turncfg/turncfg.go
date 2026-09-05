@@ -3,10 +3,35 @@ package turncfg
 import (
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
 )
+
+func DefaultConfigPath() string {
+	exe, err := os.Executable()
+	if err == nil && exe != "" {
+		return filepath.Join(filepath.Dir(exe), "config.env")
+	}
+	return "config.env"
+}
+
+func AbsPath(path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
+func ParseEnvLine(line string) (string, string, bool) {
+	key, value, ok := strings.Cut(line, "=")
+	return strings.TrimSpace(key), DecodeEnvValue(value), ok
+}
 
 type Server struct {
 	Raw      string

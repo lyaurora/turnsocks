@@ -182,26 +182,6 @@ func dialTurnTCPCandidates(ctx *setupContext, cfg Config, targetIP net.IP, targe
 
 func dialTurnTCPWithServer(ctx *setupContext, cfg Config, turn turnServerConfig, targetIP net.IP, targetPort int) (net.Conn, func(), error) {
 	peer := tcpPeerKey(targetIP, targetPort)
-	if cfg.TCPAllocs == nil {
-		allocation, err := newTCPAllocation(ctx, cfg, turn)
-		if err != nil {
-			return nil, nil, err
-		}
-		dataConn, err := allocation.connect(ctx, targetIP, targetPort)
-		if err != nil {
-			allocation.close()
-			return nil, nil, err
-		}
-		if !allocation.trackDataConn(dataConn) {
-			allocation.close()
-			return nil, nil, net.ErrClosed
-		}
-		return dataConn, func() {
-			allocation.untrackDataConn(dataConn)
-			allocation.close()
-		}, nil
-	}
-
 	for attempt := 0; ; attempt++ {
 		if err := ctx.err(); err != nil {
 			return nil, nil, err

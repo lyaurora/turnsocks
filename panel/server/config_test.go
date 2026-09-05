@@ -19,6 +19,23 @@ import (
 	"github.com/lyaurora/turnsocks/runtimestate"
 )
 
+func TestReadConfigDuplicateValues(test *testing.T) {
+	path := filepath.Join(test.TempDir(), "config.env")
+	content := " # comment=ignored\n\n LISTEN = '127.0.0.1:9999'\nLISTEN=\n" +
+		"DOH=https://dns.example/query\nDOH=\nTURN_SERVERS=turn.example:3478\nTURN_SERVERS=\n" +
+		"PANEL_USERNAME=first\n PANEL_USERNAME = 'last'\nPANEL_PASSWORD=first\nPANEL_PASSWORD='pa=ss'\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		test.Fatal(err)
+	}
+	cfg, err := readProxyConfig(path)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:9999" || cfg.DoH != "https://dns.example/query" || len(cfg.Servers) != 0 || cfg.PanelUsername != "last" || cfg.PanelPassword != "pa=ss" {
+		test.Fatalf("duplicate config values changed: %+v", cfg)
+	}
+}
+
 func TestPanelPasswordRoundTrip(t *testing.T) {
 	for _, password := range []string{"plain", "demo-password'", "'quoted'", "\"quoted\"", "pa\\ss\"'", "a\\n\\t$pass"} {
 		t.Run(password, func(t *testing.T) {
