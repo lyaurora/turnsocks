@@ -3,7 +3,7 @@ import { Chip } from "../../components/Chip";
 import { IconAlert, IconEdit, IconPlus, IconTrash, IconZap } from "../../components/icons";
 import { iconDangerButtonClass, inputClass, primaryButtonClass, smallButtonClass, softButtonClass, topButtonClass } from "../../controlClasses";
 import { displayHost, displayPort, formatTestTime, mbps, ms } from "../../lib/format";
-import type { ActiveProbe, PanelState, ProbeMode, ServerInfo, ServerTest } from "../../types/panel";
+import type { ActiveProbe, PanelState, ProbeMode, ServerInfo } from "../../types/panel";
 
 type Props = {
   state: PanelState;
@@ -23,7 +23,8 @@ type Props = {
 const toneText: Record<string, string> = {
   ok: "text-[hsl(var(--ok))]",
   warn: "text-[hsl(var(--warn))]",
-  danger: "text-[hsl(var(--danger))]"
+  danger: "text-[hsl(var(--danger))]",
+  muted: "text-[hsl(var(--muted-foreground))]"
 };
 
 function latencyTone(avgMs?: number) {
@@ -31,9 +32,9 @@ function latencyTone(avgMs?: number) {
   return avgMs! <= 80 ? "ok" : avgMs! <= 160 ? "warn" : "danger";
 }
 
-function Metric({ label, value, unit, valueClass = "text-[13px] font-semibold text-[hsl(var(--foreground))]" }: { label: string; value: string; unit?: string; valueClass?: string }) {
+function Metric({ label, value, unit, tooltip, valueClass = "text-[13px] font-semibold text-[hsl(var(--foreground))]" }: { label: string; value: string; unit?: string; tooltip?: string; valueClass?: string }) {
   return (
-    <div className="min-w-0">
+    <div className={`min-w-0 ${tooltip ? "ui-tooltip [--tooltip-max-width:100%]" : ""}`} data-tooltip={tooltip || undefined} data-tooltip-side="top" tabIndex={tooltip ? 0 : undefined}>
       <div className="mb-1 text-[11px] text-[hsl(var(--muted-foreground))]">{label}</div>
       <div className={`font-mono ${valueClass}`}>
         {value}
@@ -43,71 +44,50 @@ function Metric({ label, value, unit, valueClass = "text-[13px] font-semibold te
   );
 }
 
-function TestResults({ test, dim }: { test: ServerTest; dim?: boolean }) {
-  if (test.mode === "check") {
-    if (!test.socksTcp) return <TestFailure test={test} dim={dim} />;
-    return (
-      <div className={`space-y-2 transition-opacity ${dim ? "opacity-45" : ""}`}>
-        <div className="text-[11px] font-medium text-[hsl(var(--muted-foreground))]">连通性检查</div>
-        <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-4">
-          <Metric label="节点 TCP 延迟" value={test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"} />
-          <Metric label="TCP 转发" value={test.socksTcp.ok ? "可用" : "失败"} valueClass={`text-[13px] font-semibold ${toneText[test.socksTcp.ok ? "ok" : "danger"]}`} />
-          <Metric label="UDP 转发" value={test.socksUdp?.ok ? "可用" : "失败"} valueClass={`text-[13px] font-semibold ${toneText[test.socksUdp?.ok ? "ok" : "danger"]}`} />
-          <Metric label="检查时间" value={formatTestTime(test.testedAt)} valueClass="whitespace-nowrap text-[12px] text-[hsl(var(--foreground))]" />
-        </div>
-        {[
-          { label: "TCP 转发", check: test.socksTcp },
-          { label: "UDP 转发", check: test.socksUdp }
-        ].filter(({ check }) => !check?.ok).map(({ label, check }) => (
-          <p key={label} className="break-all text-[12px] text-[hsl(var(--danger))]">{label}：{check?.message || "检查失败"}</p>
-        ))}
-      </div>
-    );
+function NodeResults({ server, dim }: { server: ServerInfo; dim?: boolean }) {
+  // Results saved before the two probe modes include connectivity in the speed result.
+  const check = server.check || (server.test?.mode ? undefined : server.test);
+  const latest = (Date.parse(server.check?.testedAt || "") || 0) >= (Date.parse(server.test?.testedAt || "") || 0)
+    ? server.check || server.test
+    : server.test;
+  if (!latest) {
+    return <div className="text-[12px] text-[hsl(var(--muted-foreground))]">{dim ? "正在检测…" : "尚未检测，点击“检查”验证连通性，或“测速”测量带宽"}</div>;
   }
-  const hasDownload = (test.singleThread?.bytes || 0) > 0 || (test.multiThread?.bytes || 0) > 0;
-  if (!test.ok && !hasDownload) return <TestFailure test={test} dim={dim} />;
-  const tcpTone = test.tcpConnect?.ok ? latencyTone(test.tcpConnect.avgMs) : "danger";
+  const tcpTone = !check ? "muted" : check.tcpConnect?.ok ? latencyTone(check.tcpConnect.avgMs) : "danger";
+  const checkTime = check?.testedAt ? `检查时间：${formatTestTime(check.testedAt)}` : undefined;
+  const checkError = [
+    { label: "TCP 转发", result: check?.socksTcp },
+    { label: "UDP 转发", result: check?.socksUdp }
+  ].filter(({ result }) => result && !result.ok).map(({ label, result }) => `${label}：${result?.message || "检查失败"}`).join("；")
+    || (server.check && !server.check.ok ? server.check.message || "检查失败" : "");
+  const failures = [
+    { message: checkError, testedAt: check?.testedAt },
+    { message: server.test && (!server.test.ok || !server.test.singleThread?.ok || !server.test.multiThread?.ok) ? server.test.message || "测速失败" : "", testedAt: server.test?.testedAt }
+  ];
   return (
     <div className={`space-y-3 transition-opacity ${dim ? "opacity-45" : ""}`}>
-      <div className="text-[11px] font-medium text-[hsl(var(--muted-foreground))]">带宽测试</div>
       <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 xl:grid-cols-5">
-        <Metric label="节点 TCP 延迟" value={test.tcpConnect?.ok ? ms(test.tcpConnect.avgMs) : "失败"} valueClass={`text-[13px] font-semibold ${test.tcpConnect?.ok ? toneText[tcpTone] : "text-[hsl(var(--danger))]"}`} />
-        <Metric label="UDP 转发" value={test.socksUdp?.ok ? "可用" : "失败"} valueClass={`text-[13px] font-semibold ${test.socksUdp?.ok ? "text-[hsl(var(--ok))]" : "text-[hsl(var(--danger))]"}`} />
+        <Metric label="TCP 延迟" value={!check ? "未检查" : check.tcpConnect?.ok ? ms(check.tcpConnect.avgMs) : "失败"} tooltip={checkTime} valueClass={`text-[13px] font-semibold ${toneText[tcpTone]}`} />
+        <Metric label="UDP 转发" value={!check ? "未检查" : check.socksUdp?.ok ? "可用" : "失败"} tooltip={checkTime} valueClass={`text-[13px] font-semibold ${toneText[!check ? "muted" : check.socksUdp?.ok ? "ok" : "danger"]}`} />
         {[
-          { label: "单线程", speed: test.singleThread },
-          { label: "多线程", speed: test.multiThread }
+          { label: "单线程", speed: server.test?.singleThread },
+          { label: "多线程", speed: server.test?.multiThread }
         ].map(({ label, speed }) => {
           const measured = speed?.ok || (speed?.bytes || 0) > 0;
           const incomplete = measured && !speed?.ok;
           return (
-            <div key={label} className="min-w-0" title={speed?.message}>
-              <Metric label={incomplete ? `${label}（未完成）` : label} value={measured ? mbps(speed?.mbps) : "失败"} unit={measured ? "Mbps" : undefined} valueClass={speed?.ok ? undefined : `text-[13px] font-semibold ${toneText[incomplete ? "warn" : "danger"]}`} />
-            </div>
+            <Metric key={label} label={incomplete ? `${label}（未完成）` : label} value={measured ? mbps(speed?.mbps) : server.test ? "失败" : "未测速"} unit={measured ? "Mbps" : undefined} tooltip={[speed?.message, server.test?.testedAt && `测速时间：${formatTestTime(server.test.testedAt)}`].filter(Boolean).join("\n")} valueClass={!server.test ? "text-[13px] text-[hsl(var(--muted-foreground))]" : speed?.ok ? undefined : `text-[13px] font-semibold ${toneText[incomplete ? "warn" : "danger"]}`} />
           );
         })}
-        <Metric label="测试时间" value={formatTestTime(test.testedAt)} valueClass="whitespace-nowrap text-[12px] text-[hsl(var(--foreground))]" />
+        <Metric label="测试时间" value={formatTestTime(latest.testedAt)} valueClass="whitespace-nowrap text-[12px] text-[hsl(var(--foreground))]" />
       </div>
-      {!test.ok && <TestFailure test={test} />}
-    </div>
-  );
-}
-
-function NodeResults({ server, dim }: { server: ServerInfo; dim?: boolean }) {
-  return (
-    <div className="space-y-4">
-      {server.check && <TestResults test={server.check} dim={dim} />}
-      {server.test && <TestResults test={server.test} dim={dim} />}
-      {!server.check && !server.test && <div className="text-[12px] text-[hsl(var(--muted-foreground))]">{dim ? "正在检测…" : "尚未检测，点击“检查”验证连通性，或“测速”测量带宽"}</div>}
-    </div>
-  );
-}
-
-function TestFailure({ test, dim }: { test: ServerTest; dim?: boolean }) {
-  return (
-    <div className={`flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-[9px] bg-[hsl(var(--danger))]/[0.08] px-3 py-2.5 text-[hsl(var(--danger))] transition-opacity ${dim ? "opacity-45" : ""}`}>
-      <IconAlert className="h-[15px] w-[15px] flex-none" />
-      <span className="min-w-0 break-all text-[12px] font-medium">{test.message || "测试失败"}</span>
-      <span className="ml-auto whitespace-nowrap font-mono text-[11px] opacity-70">{formatTestTime(test.testedAt)}</span>
+      {failures.filter(({ message }) => message).map(({ message, testedAt }, index) => (
+        <div key={index} className="grid grid-cols-[15px_minmax(0,1fr)] items-center gap-x-2.5 gap-y-1 rounded-[9px] bg-[hsl(var(--danger))]/[0.08] px-3 py-2.5 text-[hsl(var(--danger))] sm:grid-cols-[15px_minmax(0,1fr)_auto]">
+          <IconAlert className="h-[15px] w-[15px] flex-none" />
+          <span className="min-w-0 break-all text-[12px] font-medium">{message}</span>
+          <span className="col-start-2 whitespace-nowrap text-right font-mono text-[11px] opacity-70 sm:col-start-auto">{formatTestTime(testedAt)}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -145,8 +125,8 @@ export function NodePanel({ state, serverInput, testing, locked, onServerInput, 
 
   return (
     <div className="flex flex-col gap-5">
-      <section className="shell-window relative overflow-hidden p-6 md:p-7">
-        <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(460px at 94% -60%, hsl(var(--primary) / 0.08), transparent 65%)" }} />
+      <section className="shell-window relative p-6 md:p-7">
+        <div className="pointer-events-none absolute inset-0 rounded-[inherit]" style={{ background: "radial-gradient(460px at 94% -60%, hsl(var(--primary) / 0.08), transparent 65%)" }} />
         <div className="relative">
           <div className="text-[12px] font-medium text-[hsl(var(--muted-foreground))]">当前 TURN 节点</div>
           <div className="mb-3 mt-1.5 break-all font-mono text-[24px] font-semibold leading-[1.2] text-[hsl(var(--foreground))] sm:text-[28px] md:text-[30px]">
@@ -170,13 +150,13 @@ export function NodePanel({ state, serverInput, testing, locked, onServerInput, 
         </div>
       </section>
 
-      <section className="shell-window overflow-hidden">
+      <section className="shell-window">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--border))] px-4 py-3.5 md:px-[18px]">
           <h2 className="text-[14.5px] font-semibold text-[hsl(var(--foreground))]">节点管理</h2>
           <div className="flex flex-wrap gap-2">
             {testing && <button className={smallButtonClass} onClick={onStopTesting} type="button">停止检测</button>}
-            <button className={smallButtonClass} disabled={locked || !state.servers.length} onClick={() => onTestAll("check")} title="使用少量流量检查 TCP / UDP 转发" type="button">检查全部</button>
-            <button className={smallButtonClass} disabled={locked || !state.servers.length} onClick={() => onTestAll("speed")} title="依次测速，每个节点约 112 MiB 下载流量" type="button">
+            <button className={`${smallButtonClass} ui-tooltip`} disabled={locked || !state.servers.length} onClick={() => onTestAll("check")} aria-label="检查全部" data-tooltip="检查延迟与连通性" type="button">检查全部</button>
+            <button className={`${smallButtonClass} ui-tooltip`} disabled={locked || !state.servers.length} onClick={() => onTestAll("speed")} aria-label="测速全部" data-tooltip="约 112 MiB / 节点" type="button">
               <IconZap className="h-3.5 w-3.5" />
               测速全部
             </button>
@@ -212,8 +192,8 @@ export function NodePanel({ state, serverInput, testing, locked, onServerInput, 
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-[7px] sm:justify-end">
-                      <button disabled={locked} onClick={() => onTestServer(server.raw, "check")} className={smallButtonClass} title="使用少量流量检查 TCP / UDP 转发" type="button">检查</button>
-                      <button disabled={locked} onClick={() => onTestServer(server.raw, "speed")} className={smallButtonClass} title="约 112 MiB 下载流量" type="button">测速</button>
+                      <button disabled={locked} onClick={() => onTestServer(server.raw, "check")} className={`${smallButtonClass} ui-tooltip`} aria-label="检查" data-tooltip="延迟与连通性检查" type="button">检查</button>
+                      <button disabled={locked} onClick={() => onTestServer(server.raw, "speed")} className={`${smallButtonClass} ui-tooltip`} aria-label="测速" data-tooltip="仅测带宽，约 112 MiB" type="button">测速</button>
                       {!isCurrent && (
                         <button disabled={locked} onClick={() => onSelectServer(server.raw)} className={softButtonClass} type="button">切换</button>
                       )}

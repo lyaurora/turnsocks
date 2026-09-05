@@ -43,7 +43,7 @@ func TestDownloadSpeedRequiresCompleteTransfer(t *testing.T) {
 
 func TestIncompleteDownloadSummaryKeepsMeasuredSpeed(t *testing.T) {
 	speed := speedFromDownload(1<<20, 2<<20, time.Second, 1, io.ErrUnexpectedEOF)
-	result := Result{TCPConnect: Metric{OK: true}, SingleThread: speed, MultiThread: speed}
+	result := Result{SingleThread: speed, MultiThread: speed}
 	message := serverTestMessage(result)
 	if !strings.Contains(message, "测试未完成") || !strings.Contains(message, "8.4 Mbps") {
 		t.Fatalf("partial measurements were hidden: %s", message)
@@ -52,5 +52,9 @@ func TestIncompleteDownloadSummaryKeepsMeasuredSpeed(t *testing.T) {
 	result.MultiThread = Speed{}
 	if message := serverTestMessage(result); !strings.Contains(message, "未测出可用带宽") {
 		t.Fatalf("empty results should not imply measured throughput: %s", message)
+	}
+	result.SingleThread.OK, result.MultiThread.OK = true, true
+	if message := serverTestMessage(result); strings.Contains(message, "失败") {
+		t.Fatalf("bandwidth success must not depend on UDP checks: %s", message)
 	}
 }

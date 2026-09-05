@@ -96,7 +96,8 @@ input {
 }
 
 button:focus-visible,
-a:focus-visible {
+a:focus-visible,
+.ui-tooltip:focus-visible {
   outline: 2px solid hsl(var(--ring) / 0.8);
   outline-offset: 2px;
 }
@@ -142,9 +143,10 @@ a:focus-visible {
     pointer-events: none;
     transform: translate(-50%, -2px);
     transition: opacity .12s ease, transform .12s ease;
-    white-space: normal;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
     width: max-content;
-    max-width: 260px;
+    max-width: min(260px, var(--tooltip-max-width, 100vw));
     text-align: center;
   }
 

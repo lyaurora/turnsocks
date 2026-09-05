@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -88,6 +89,12 @@ func runProbeHelper() error {
 			}
 			reply := []byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 0}
 			if request[1] == 1 {
+				if scenario == "speed" {
+					record(fmt.Sprintf("TCP %s:%d", host, binary.BigEndian.Uint16(port[:])))
+					reply[1] = 5 // Reject downloads locally, before any TLS or public traffic.
+					_, _ = conn.Write(reply)
+					return
+				}
 				_, _ = conn.Write(reply)
 				req, err := http.ReadRequest(bufio.NewReader(conn))
 				if err != nil {
@@ -127,8 +134,8 @@ func runProbeHelper() error {
 	}
 }
 
-func TestLightCheckAndCancellation(t *testing.T) {
-	for _, scenario := range []string{"success", "redirect", "startup", "handshake", "udp"} {
+func TestProbeModesAndCancellation(t *testing.T) {
+	for _, scenario := range []string{"success", "redirect", "startup", "handshake", "udp", "speed", "speed handshake"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir := t.TempDir()
 			bin, err := os.Executable()
@@ -137,7 +144,7 @@ func TestLightCheckAndCancellation(t *testing.T) {
 			}
 			t.Setenv("TURNSOCKS_BIN", bin)
 			t.Setenv("TURNSOCKS_PROBE_HELPER", "1")
-			t.Setenv("TURNSOCKS_PROBE_SCENARIO", scenario)
+			t.Setenv("TURNSOCKS_PROBE_SCENARIO", strings.TrimPrefix(scenario, "speed "))
 			t.Setenv("TURNSOCKS_PROBE_READY", filepath.Join(dir, "ready"))
 			t.Setenv("TURNSOCKS_PROBE_REQUESTS", filepath.Join(dir, "requests"))
 			t.Setenv("TMPDIR", dir)
@@ -146,21 +153,27 @@ func TestLightCheckAndCancellation(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer ln.Close()
+			var tcpChecks atomic.Int32
 			go func() {
 				for {
 					conn, err := ln.Accept()
 					if err != nil {
 						return
 					}
+					tcpChecks.Add(1)
 					_ = conn.Close()
 				}
 			}()
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 			defer cancel()
+			mode := ModeCheck
+			if strings.HasPrefix(scenario, "speed") {
+				mode = ModeSpeed
+			}
 			done := make(chan Result, 1)
 			go func() {
 				defer close(done)
-				done <- (Runner{}).Test(ctx, Server{Raw: ln.Addr().String(), Addr: ln.Addr().String()}, "", ModeCheck)
+				done <- (Runner{}).Test(ctx, Server{Raw: ln.Addr().String(), Addr: ln.Addr().String()}, "", mode)
 			}()
 			defer func() {
 				cancel()
@@ -170,7 +183,7 @@ func TestLightCheckAndCancellation(t *testing.T) {
 					t.Error("temporary proxy did not finish cleanup")
 				}
 			}()
-			canceled := scenario != "success" && scenario != "redirect"
+			canceled := scenario != "success" && scenario != "redirect" && scenario != "speed"
 			if canceled {
 				deadline := time.Now().Add(3 * time.Second)
 				for {
@@ -190,8 +203,19 @@ func TestLightCheckAndCancellation(t *testing.T) {
 					if result.OK || result.Message != "检测已停止" {
 						t.Fatalf("canceled result = %+v", result)
 					}
+				} else if mode == ModeSpeed {
+					if tcpChecks.Load() != 0 || result.TCPConnect != (Metric{}) || result.SOCKSUDP != (Check{}) || result.SOCKSTCP != nil {
+						t.Fatalf("speed probe performed connectivity checks: %+v, TCP checks=%d", result, tcpChecks.Load())
+					}
+					if result.SingleThread.Threads != 1 || result.MultiThread.Threads != testMultiThreads || result.DownloadBytes != testSingleBytes+testMultiThreads*testMultiBytes {
+						t.Fatalf("speed probe omitted bandwidth measurements: %+v", result)
+					}
+					raw, err := os.ReadFile(filepath.Join(dir, "requests"))
+					if err != nil || string(raw) != strings.Repeat("TCP speed.cloudflare.com:443\n", 1+testMultiThreads) {
+						t.Fatalf("speed probe must request downloads only: %q, %v", raw, err)
+					}
 				} else {
-					if result.OK != (scenario == "success") || result.SOCKSTCP == nil || !result.SOCKSUDP.OK || result.SingleThread.Threads != 0 || result.MultiThread.Threads != 0 || result.DownloadBytes != 0 {
+					if result.OK != (scenario == "success") || !result.TCPConnect.OK || result.SOCKSTCP == nil || !result.SOCKSUDP.OK || result.SingleThread.Threads != 0 || result.MultiThread.Threads != 0 || result.DownloadBytes != 0 {
 						t.Fatalf("light check result = %+v", result)
 					}
 					raw, err := os.ReadFile(filepath.Join(dir, "requests"))

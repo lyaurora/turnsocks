@@ -10,10 +10,10 @@ const originalWindow = globalThis.window;
 try {
   const { testServer, deleteServer } = await vite.ssrLoadModule("/src/api/client.ts");
   const partial = {
+    mode: "speed",
     ok: false,
+    testedAt: "2026-09-05T12:00:00.100Z",
     message: "测试未完成，下载数据不完整",
-    tcpConnect: { ok: true, avgMs: 10 },
-    socksUdp: { ok: true },
     singleThread: { ok: false, mbps: 200.16, bytes: 33504512, message: "下载异常：unexpected EOF" },
     multiThread: { ok: false, mbps: 355.34, bytes: 83865984, message: "下载异常：connection reset" }
   };
@@ -63,6 +63,7 @@ try {
   assert.match(html, /200\.2/);
   assert.match(html, /355\.3/);
   assert.match(html, /unexpected EOF/);
+  assert.match(html, /未检查/);
 
   const mixed = render({ ...partial, ok: true, singleThread: { ...partial.singleThread, ok: true } });
   assert.doesNotMatch(mixed, /单线程（未完成）/);
@@ -75,14 +76,35 @@ try {
   assert.match(failed, /连接失败/);
   assert.doesNotMatch(failed, /Mbps/);
 
-  const check = { mode: "check", ok: false, socksTcp: { ok: true }, socksUdp: { ok: false, message: "UDP timed out" } };
+  const check = { mode: "check", ok: false, testedAt: "2026-09-05T12:00:00.200Z", tcpConnect: { ok: true, avgMs: 36.5 }, socksTcp: { ok: true }, socksUdp: { ok: false, message: "UDP timed out" } };
   const light = render(undefined, check);
-  assert.match(light, /连通性检查/);
+  assert.match(light, /未测速/);
   assert.match(light, /UDP timed out/);
-  assert.doesNotMatch(light, /Mbps|单线程|多线程/);
+  assert.match(light, /text-\[hsl\(var\(--ok\)\)\][^"]*">36\.5ms/);
+  assert.doesNotMatch(light, /Mbps|节点 TCP 延迟|>连通性检查<|>带宽测试</);
   const combined = render(partial, check);
+  for (const label of ["TCP 延迟", "UDP 转发</div>", "测试时间"]) {
+    assert.equal(combined.split(label).length - 1, 2, "each hero and node card must show a single result row");
+  }
   assert.match(combined, /UDP timed out/);
+  assert.match(combined, /36\.5ms/);
   assert.match(combined, /200\.2/);
+  assert.doesNotMatch(combined, /10\.0ms|节点 TCP 延迟|>连通性检查<|>带宽测试</);
+  const notices = [...combined.matchAll(/<div class="([^"]*bg-\[hsl\(var\(--danger\)\)\][^"]*)">(.*?)<\/div>/gs)];
+  assert.equal(notices.length, 4, "each hero and node card must retain both check and download errors");
+  assert.equal(new Set(notices.map(([, className]) => className)).size, 1, "all failure notices must use the same style");
+  const refreshed = render({ ...partial, testedAt: "2026-09-05T12:00:00.300Z" }, check);
+  assert.match(refreshed, /36\.5ms/);
+  assert.match(refreshed, /测试未完成，下载数据不完整/);
+  assert.match(refreshed, /UDP timed out/, "speed results must not replace connectivity results or errors");
+  const recovered = render(partial, { ...check, ok: true, socksUdp: { ok: true } });
+  assert.doesNotMatch(recovered, /UDP timed out/);
+  assert.match(recovered, /测试未完成，下载数据不完整/, "a successful check must not hide a download error");
+  const tcpFailed = render(partial, { ...check, socksTcp: { ok: false, message: "TCP relay refused" }, socksUdp: { ok: true } });
+  assert.match(tcpFailed, /TCP 转发：TCP relay refused/);
+  assert.match(tcpFailed, /200\.2/);
+  const legacy = render({ ...partial, mode: undefined, tcpConnect: { ok: true, avgMs: 10 }, socksUdp: { ok: true } });
+  assert.match(legacy, /10\.0ms/, "results saved before separate modes must remain readable");
 
   const running = render(partial, check, { server: "turn.example:3478", mode: "check" });
   const buttons = [...running.matchAll(/<button\b([^>]*)>(.*?)<\/button>/gs)];

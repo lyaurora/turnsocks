@@ -82,17 +82,22 @@ func (r Runner) Test(ctx context.Context, server Server, doh string, mode Mode) 
 	if ctx.Err() != nil {
 		return resp
 	}
-	resp.TCPConnect = measureTCPConnect(ctx, server.Addr)
-	if ctx.Err() != nil {
-		return resp
+	if mode == ModeCheck {
+		resp.TCPConnect = measureTCPConnect(ctx, server.Addr)
+		if ctx.Err() != nil {
+			return resp
+		}
 	}
 
 	proxyAddr, cleanup, err := r.startTestProxy(ctx, server.Raw, doh)
 	if err != nil {
 		msg := "临时代理启动失败：" + err.Error()
-		resp.SOCKSUDP = Check{Message: msg}
-		resp.SingleThread = Speed{Threads: 1, Message: msg}
-		resp.MultiThread = Speed{Threads: testMultiThreads, Message: msg}
+		if mode == ModeCheck {
+			resp.SOCKSUDP = Check{Message: msg}
+		} else {
+			resp.SingleThread = Speed{Threads: 1, Message: msg}
+			resp.MultiThread = Speed{Threads: testMultiThreads, Message: msg}
+		}
 		resp.Message = msg
 		return resp
 	}
@@ -114,10 +119,6 @@ func (r Runner) Test(ctx context.Context, server Server, doh string, mode Mode) 
 	}
 
 	resp.DownloadBytes = testSingleBytes + int64(testMultiThreads)*testMultiBytes
-	resp.SOCKSUDP = testSOCKSUDP(ctx, proxyAddr)
-	if ctx.Err() != nil {
-		return resp
-	}
 	resp.SingleThread = measureDownloadSpeed(ctx, proxyAddr, 1, testSingleBytes)
 	if ctx.Err() != nil {
 		return resp

@@ -35,7 +35,7 @@ func metricFromSamples(samples []float64, attempts int, failMessage string, last
 
 func serverTestMessage(resp Result) string {
 	if resp.SingleThread.OK || resp.MultiThread.OK {
-		if !resp.SOCKSUDP.OK || !resp.SingleThread.OK || !resp.MultiThread.OK {
+		if !resp.SingleThread.OK || !resp.MultiThread.OK {
 			return fmt.Sprintf("测试完成，部分项目失败：单线程 %.1f Mbps，多线程 %.1f Mbps", resp.SingleThread.Mbps, resp.MultiThread.Mbps)
 		}
 		return fmt.Sprintf("测试完成：单线程 %.1f Mbps，多线程 %.1f Mbps", resp.SingleThread.Mbps, resp.MultiThread.Mbps)
@@ -43,10 +43,7 @@ func serverTestMessage(resp Result) string {
 	if resp.SingleThread.Bytes > 0 || resp.MultiThread.Bytes > 0 {
 		return fmt.Sprintf("测试未完成：单线程 %.1f Mbps，多线程 %.1f Mbps", resp.SingleThread.Mbps, resp.MultiThread.Mbps)
 	}
-	if resp.TCPConnect.OK {
-		return fmt.Sprintf("测试失败：未测出可用带宽，TCP 延迟 %.1f ms", resp.TCPConnect.AvgMS)
-	}
-	return "测试失败"
+	return "测试失败：未测出可用带宽"
 }
 
 func elapsedMS(start time.Time) float64 {
