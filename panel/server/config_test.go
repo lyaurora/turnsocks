@@ -3,14 +3,18 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestPanelPasswordRoundTrip(t *testing.T) {
@@ -166,6 +170,7 @@ func TestConfigApplyRollback(t *testing.T) {
 		}{
 			{mode: "success", wantCalls: 1, wantMessage: "已重启"},
 			{mode: "restart_failure", wantCalls: 2, wantMessage: "已恢复旧配置，代理已恢复"},
+			{mode: "startup_failure", wantCalls: 2, wantMessage: "已恢复旧配置，代理已恢复"},
 			{mode: "recovery_failure", wantCalls: 2, wantMessage: "代理恢复失败"},
 			{mode: "config_restore_failure", wantCalls: 1, wantMessage: "旧配置恢复失败"},
 			{mode: "state_restore_failure", wantCalls: 2, wantMessage: "节点状态恢复失败"},
@@ -177,17 +182,9 @@ func TestConfigApplyRollback(t *testing.T) {
 			t.Run(operation+"/"+tc.mode, func(t *testing.T) {
 				dir := t.TempDir()
 				a := &app{configPath: filepath.Join(dir, "config.env"), statePath: filepath.Join(dir, "state")}
-				oldListener, err := net.Listen("tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = oldListener.Close() })
-				newListener, err := net.Listen("tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = newListener.Close() })
-				if tc.mode != "success" {
+				oldListener := readinessListener(t, "127.0.0.1:0", true)
+				newListener := readinessListener(t, "127.0.0.1:0", tc.mode != "startup_failure")
+				if tc.mode != "success" && tc.mode != "startup_failure" {
 					_ = newListener.Close()
 				}
 				before := proxyConfig{
@@ -218,6 +215,8 @@ func TestConfigApplyRollback(t *testing.T) {
 				t.Setenv("CONFIG_TEST_STATE", a.statePath)
 				t.Setenv("CONFIG_TEST_CALLS", filepath.Join(dir, "calls"))
 				t.Setenv("CONFIG_TEST_FIRST", filepath.Join(dir, "first-restart"))
+				t.Setenv("CONFIG_TEST_PID", strconv.Itoa(os.Getpid()))
+				t.Setenv("CONFIG_TEST_OTHER_PID", strconv.Itoa(os.Getppid()))
 				sudo := `#!/bin/sh
 set -eu
 [ "$*" = '-n systemctl restart turnsocks' ] || exit 99
@@ -229,7 +228,7 @@ if [ -f "$CONFIG_TEST_FIRST" ]; then
 fi
 : > "$CONFIG_TEST_FIRST"
 case "$CONFIG_TEST_MODE" in
-    success|state_write_failure) exit 0 ;;
+    success|startup_failure|state_write_failure) exit 0 ;;
     config_restore_failure) /bin/mkdir "$CONFIG_TEST_CONFIG.tmp" ;;
     state_restore_failure) /bin/rm "$CONFIG_TEST_STATE"; /bin/mkdir "$CONFIG_TEST_STATE" ;;
 esac
@@ -237,7 +236,7 @@ exit 1
 `
 				for name, script := range map[string]string{
 					"sudo":      sudo,
-					"systemctl": "#!/bin/sh\n[ \"$*\" = 'is-active turnsocks' ] || exit 99\nprintf 'active\\n'\n",
+					"systemctl": readinessSystemctl,
 				} {
 					if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
 						t.Fatal(err)
@@ -302,5 +301,111 @@ exit 1
 				}
 			})
 		}
+	}
+}
+
+// Both supported commands model a Type=simple process that can fail after the
+// restart job succeeds. The recovery restart uses this test process's listener.
+const readinessSystemctl = `#!/bin/sh
+active=active
+pid=$CONFIG_TEST_PID
+if [ "$CONFIG_TEST_MODE" = startup_failure ] && [ ! -f "$CONFIG_TEST_CONFIG.recovery" ]; then
+    if [ -f "$CONFIG_TEST_CONFIG.checked" ]; then active=failed; pid=0; fi
+    if [ "$active" = active ]; then pid=$CONFIG_TEST_OTHER_PID; fi
+    : > "$CONFIG_TEST_CONFIG.checked"
+fi
+case "$*" in
+    'is-active turnsocks') printf '%s\n' "$active"; [ "$active" = active ] ;;
+    'show --property=ActiveState,MainPID turnsocks') printf 'ActiveState=%s\nMainPID=%s\n' "$active" "$pid" ;;
+    *) exit 99 ;;
+esac
+`
+
+func readinessListener(t *testing.T, addr string, socks bool) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workers sync.WaitGroup
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				greeting := make([]byte, 3)
+				if _, err := io.ReadFull(conn, greeting); err != nil {
+					return
+				}
+				if !bytes.Equal(greeting, []byte{5, 1, 0}) {
+					t.Errorf("unexpected SOCKS greeting %v", greeting)
+					return
+				}
+				if socks {
+					_, _ = conn.Write([]byte{5, 0})
+				} else {
+					_, _ = conn.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
+				}
+				_, _ = io.Copy(io.Discard, conn)
+			}()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		workers.Wait()
+	})
+	return listener
+}
+
+func TestReadinessChecksSOCKSAndProcess(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		listen  string
+		socks   bool
+		foreign bool
+		exits   bool
+		wantOK  bool
+	}{
+		{name: "own IPv4 SOCKS", listen: "127.0.0.1:0", socks: true, wantOK: true},
+		{name: "own IPv6 SOCKS", listen: "[::1]:0", socks: true, wantOK: true},
+		{name: "dual stack IPv4 SOCKS", listen: "[::]:0", socks: true, wantOK: true},
+		{name: "HTTP listener", listen: "127.0.0.1:0"},
+		{name: "another process SOCKS", listen: "127.0.0.1:0", socks: true, foreign: true},
+		{name: "service exits after handshake", listen: "127.0.0.1:0", socks: true, exits: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := readinessListener(t, tc.listen, tc.socks)
+			addr := listener.Addr().String()
+			if tc.listen == "[::]:0" {
+				addr = net.JoinHostPort("127.0.0.1", strconv.Itoa(listener.Addr().(*net.TCPAddr).Port))
+			}
+			dir := t.TempDir()
+			t.Setenv("PATH", dir)
+			t.Setenv("CONFIG_TEST_MODE", "success")
+			pid := os.Getpid()
+			if tc.foreign {
+				pid = os.Getppid()
+			}
+			t.Setenv("CONFIG_TEST_PID", strconv.Itoa(pid))
+			if tc.exits {
+				t.Setenv("CONFIG_TEST_MODE", "startup_failure")
+				t.Setenv("CONFIG_TEST_CONFIG", filepath.Join(dir, "config.env"))
+				t.Setenv("CONFIG_TEST_OTHER_PID", strconv.Itoa(pid))
+			}
+			if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(readinessSystemctl), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := waitTurnsocksReady(500*time.Millisecond, addr); (err == nil) != tc.wantOK {
+				t.Fatalf("readiness error = %v, want ready %v", err, tc.wantOK)
+			}
+		})
 	}
 }
