@@ -65,6 +65,7 @@ func speedFromDownload(total, expected int64, elapsed time.Duration, threads int
 
 func downloadBytes(ctx context.Context, proxyAddr string, size int64) (int64, error) {
 	client := httpClientViaSOCKS(proxyAddr, 30*time.Second)
+	defer client.CloseIdleConnections()
 	targetURL, err := downloadURL(size)
 	if err != nil {
 		return 0, err

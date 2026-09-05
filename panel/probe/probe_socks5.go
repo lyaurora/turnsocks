@@ -17,7 +17,6 @@ func httpClientViaSOCKS(proxyAddr string, timeout time.Duration) *http.Client {
 	transport := &http.Transport{
 		Proxy:                 nil,
 		DialContext:           socks5DialContext(proxyAddr, 8*time.Second),
-		DisableKeepAlives:     true,
 		DisableCompression:    true,
 		TLSHandshakeTimeout:   8 * time.Second,
 		ResponseHeaderTimeout: 12 * time.Second,
