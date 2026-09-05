@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,79 +30,28 @@ func TestDialTurnTCPRecoversStaleAllocation(t *testing.T) {
 		{name: "peer timeout", prewarm: true, timeout: true, wantAllocs: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
 			var allocations atomic.Int32
-			var workers sync.WaitGroup
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				for {
-					conn, err := listener.Accept()
-					if err != nil {
-						return
+			turn := serveSetupTURN(t, func(conn net.Conn, req, res *stun.Message) bool {
+				switch req.Type.Method {
+				case MethodAllocate:
+					return allocations.Add(1) <= tc.disconnects
+				case MethodConnect:
+					if tc.timeout {
+						_, _ = io.Copy(io.Discard, conn)
+						return true
 					}
-					workers.Add(1)
-					go func() {
-						defer workers.Done()
-						defer conn.Close()
-						_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-						for {
-							req, err := readSTUNMessage(conn)
-							if err != nil {
-								return
-							}
-							res := stun.New()
-							res.Type = stun.MessageType{Method: req.Type.Method, Class: stun.ClassSuccessResponse}
-							res.TransactionID = req.TransactionID
-							disconnect := false
-							switch req.Type.Method {
-							case MethodAllocate:
-								disconnect = allocations.Add(1) <= tc.disconnects
-							case MethodConnect:
-								if tc.timeout {
-									_, _ = io.Copy(io.Discard, conn)
-									return
-								}
-								if tc.connectCode != 0 {
-									res.Type.Class = stun.ClassErrorResponse
-									_ = (stun.ErrorCodeAttribute{Code: tc.connectCode, Reason: []byte("test refusal")}).AddTo(res)
-								} else {
-									res.Add(AttrConnectionID, []byte{0, 0, 0, 1})
-								}
-							case MethodConnectionBind:
-							default:
-								t.Errorf("unexpected TURN method: %v", req.Type.Method)
-								return
-							}
-							if err := writeSTUNMessage(conn, res); err != nil || disconnect {
-								return
-							}
-							if req.Type.Method == MethodConnectionBind {
-								_, _ = io.Copy(conn, conn)
-								return
-							}
-						}
-					}()
+					if tc.connectCode != 0 {
+						res.Type.Class = stun.ClassErrorResponse
+						_ = (stun.ErrorCodeAttribute{Code: tc.connectCode, Reason: []byte("test refusal")}).AddTo(res)
+					}
+				case MethodConnectionBind:
+				default:
+					t.Errorf("unexpected TURN method: %v", req.Type.Method)
+					return true
 				}
-			}()
-			t.Cleanup(func() {
-				_ = listener.Close()
-				workers.Wait()
+				return false
 			})
-			turn := turnServerConfig{Addr: listener.Addr().String()}
-			cfg := Config{
-				Timeout:   time.Second,
-				TurnPool:  newTurnPool([]turnServerConfig{turn}, time.Minute, ""),
-				TCPAllocs: newTCPAllocationPool(),
-			}
-			t.Cleanup(func() {
-				for _, allocation := range cfg.TCPAllocs.allocs[turn.String()] {
-					allocation.close()
-				}
-			})
+			cfg := setupTestConfig(t, turn)
 			if tc.prewarm {
 				if err := cfg.TCPAllocs.addIdle(cfg, turn); err != nil {
 					t.Fatal(err)

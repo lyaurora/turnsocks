@@ -20,7 +20,7 @@ import (
 )
 
 // A loopback TURN peer exercises allocation, connection binding, and data relay.
-func serveSetupTURN(t *testing.T, respond func(*stun.Message, *stun.Message)) turnServerConfig {
+func serveSetupTURN(t *testing.T, respond func(net.Conn, *stun.Message, *stun.Message) bool) turnServerConfig {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -53,13 +53,11 @@ func serveSetupTURN(t *testing.T, respond func(*stun.Message, *stun.Message)) tu
 					res := stun.New()
 					res.Type = stun.MessageType{Method: req.Type.Method, Class: stun.ClassSuccessResponse}
 					res.TransactionID = req.TransactionID
-					if req.Type.Method == MethodConnect {
+					disconnect := respond != nil && respond(conn, req, res)
+					if req.Type.Method == MethodConnect && res.Type.Class == stun.ClassSuccessResponse {
 						res.Add(AttrConnectionID, []byte{0, 0, 0, 1})
 					}
-					if respond != nil {
-						respond(req, res)
-					}
-					if writeSTUNMessage(conn, res) != nil {
+					if writeSTUNMessage(conn, res) != nil || disconnect {
 						return
 					}
 					if req.Type.Method == MethodConnectionBind {
@@ -154,10 +152,11 @@ func TestSOCKSSetupSharesDeadlineAcrossStages(t *testing.T) {
 		{name: "DNS and TURN", host: "setup-budget.example", dns: 80 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			turn := serveSetupTURN(t, func(req, _ *stun.Message) {
+			turn := serveSetupTURN(t, func(_ net.Conn, req, _ *stun.Message) bool {
 				if req.Type.Method == MethodAllocate || req.Type.Method == MethodConnect {
 					time.Sleep(80 * time.Millisecond)
 				}
+				return false
 			})
 			cfg := setupTestConfig(t, turn)
 			cfg.Timeout = 200 * time.Millisecond
@@ -261,10 +260,11 @@ func TestTCPSetupDeadlinePreservesSharedAllocation(t *testing.T) {
 			allow := sync.OnceFunc(func() { close(unblock) })
 			defer allow()
 			var connects atomic.Int32
-			turn := serveSetupTURN(t, func(req, _ *stun.Message) {
+			turn := serveSetupTURN(t, func(_ net.Conn, req, _ *stun.Message) bool {
 				if req.Type.Method == MethodConnect && connects.Add(1) == 2 && !queued {
 					<-unblock
 				}
+				return false
 			})
 			cfg := setupTestConfig(t, turn)
 			first, release, _, err := dialTurnTCP(&setupContext{Context: context.Background()}, cfg, net.IPv4(192, 0, 2, 1), 443)
@@ -324,23 +324,26 @@ func TestTCPSetupDeadlinePreservesSharedAllocation(t *testing.T) {
 }
 
 func TestSetupDeadlineCoversNodeRetries(t *testing.T) {
-	first := serveSetupTURN(t, func(req, res *stun.Message) {
+	first := serveSetupTURN(t, func(_ net.Conn, req, res *stun.Message) bool {
 		if req.Type.Method == MethodAllocate {
 			time.Sleep(50 * time.Millisecond)
 			res.Type.Class = stun.ClassErrorResponse
 			_ = (stun.ErrorCodeAttribute{Code: 500, Reason: []byte("test failure")}).AddTo(res)
 		}
+		return false
 	})
-	second := serveSetupTURN(t, func(req, _ *stun.Message) {
+	second := serveSetupTURN(t, func(_ net.Conn, req, _ *stun.Message) bool {
 		if req.Type.Method == MethodAllocate {
 			time.Sleep(100 * time.Millisecond)
 		}
+		return false
 	})
 	var thirdAttempts atomic.Int32
-	third := serveSetupTURN(t, func(req, _ *stun.Message) {
+	third := serveSetupTURN(t, func(_ net.Conn, req, _ *stun.Message) bool {
 		if req.Type.Method == MethodAllocate {
 			thirdAttempts.Add(1)
 		}
+		return false
 	})
 	cfg := setupTestConfig(t, first, second, third)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
@@ -364,9 +367,9 @@ func TestSetupDeadlineCoversAuthenticationRetries(t *testing.T) {
 	for _, udp := range []bool{false, true} {
 		t.Run(fmt.Sprintf("udp=%v", udp), func(t *testing.T) {
 			var attempts atomic.Int32
-			turn := serveSetupTURN(t, func(req, res *stun.Message) {
+			turn := serveSetupTURN(t, func(_ net.Conn, req, res *stun.Message) bool {
 				if req.Type.Method != MethodAllocate {
-					return
+					return false
 				}
 				n := attempts.Add(1)
 				time.Sleep(70 * time.Millisecond)
@@ -383,6 +386,7 @@ func TestSetupDeadlineCoversAuthenticationRetries(t *testing.T) {
 				if n > 1 {
 					_ = stun.NewLongTermIntegrity("test", "setup.example", "secret").AddTo(res)
 				}
+				return false
 			})
 			turn.Username, turn.Password, turn.ExplicitAuth = "test", "secret", true
 			cfg := setupTestConfig(t, turn)

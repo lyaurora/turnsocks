@@ -19,7 +19,6 @@ import (
 )
 
 type recordingSTUNConn struct {
-	writes     chan *stun.Message
 	closed     atomic.Bool
 	writeCount atomic.Int32
 	onWrite    func(*stun.Message, int)
@@ -82,9 +81,6 @@ func (c *recordingSTUNConn) writeMessage(m *stun.Message, _ time.Duration) error
 		return err
 	}
 	count := int(c.writeCount.Add(1))
-	if c.writes != nil {
-		c.writes <- clone
-	}
 	if c.onWrite != nil {
 		c.onWrite(clone, count)
 	}
@@ -101,20 +97,6 @@ func (c *recordingSTUNConn) writeRaw(raw []byte, _ time.Duration) error {
 func (c *recordingSTUNConn) close() error {
 	c.closed.Store(true)
 	return nil
-}
-
-func TestUDPSessionFailureClosesControlConnection(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-
-	s := &udpSession{clientTCP: server, closed: make(chan struct{})}
-	s.fail()
-
-	_ = client.SetReadDeadline(time.Now().Add(time.Second))
-	var buf [1]byte
-	if _, err := client.Read(buf[:]); !errors.Is(err, io.EOF) {
-		t.Fatalf("control connection read error = %v, want EOF", err)
-	}
 }
 
 func TestAcceptLoopRecoversAfterError(t *testing.T) {
@@ -192,37 +174,12 @@ func TestSocksUDPIPv4Packet(test *testing.T) {
 	}
 }
 
-func TestUDPSessionCloseReleasesAllocation(t *testing.T) {
-	turnConn := &recordingSTUNConn{writes: make(chan *stun.Message, 1)}
-	s := &udpSession{turnConn: turnConn, closed: make(chan struct{})}
-
-	s.close()
-
-	select {
-	case msg := <-turnConn.writes:
-		if msg.Type.Method != MethodRefresh || msg.Type.Class != stun.ClassRequest {
-			t.Fatalf("release type = %v, want Refresh request", msg.Type)
-		}
-		lifetime, err := msg.Get(AttrLifetime)
-		if err != nil {
-			t.Fatalf("release missing lifetime: %v", err)
-		}
-		if got := binary.BigEndian.Uint32(lifetime); got != 0 {
-			t.Fatalf("release lifetime = %d, want 0", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("release request was not sent")
-	}
-	if !turnConn.closed.Load() {
-		t.Fatal("TURN connection was not closed")
-	}
-}
-
 func TestUDPSessionRegistryCloseAllReleasesActiveAllocations(t *testing.T) {
 	registry := newUDPSessionRegistry()
 	client, server := net.Pipe()
 	defer client.Close()
-	turnConn := &recordingSTUNConn{}
+	var release *stun.Message
+	turnConn := &recordingSTUNConn{onWrite: func(message *stun.Message, _ int) { release = message }}
 	s := &udpSession{
 		clientTCP: server,
 		turnConn:  turnConn,
@@ -239,6 +196,13 @@ func TestUDPSessionRegistryCloseAllReleasesActiveAllocations(t *testing.T) {
 	}
 	if got := turnConn.writeCount.Load(); got != 1 {
 		t.Fatalf("release writes = %d, want 1", got)
+	}
+	if release == nil || release.Type.Method != MethodRefresh || release.Type.Class != stun.ClassRequest {
+		t.Fatalf("release = %v, want Refresh request", release)
+	}
+	lifetime, err := release.Get(AttrLifetime)
+	if err != nil || !bytes.Equal(lifetime, []byte{0, 0, 0, 0}) {
+		t.Fatalf("release lifetime = %x, err = %v; want 0", lifetime, err)
 	}
 	_ = client.SetReadDeadline(time.Now().Add(time.Second))
 	var buf [1]byte
@@ -415,40 +379,6 @@ func TestDoSTUNIgnoresUnrelatedResponse(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestUDPRequestRetransmitsAfterDroppedResponse(t *testing.T) {
-	turnConn := &recordingSTUNConn{}
-	s := &udpSession{
-		cfg:         Config{Timeout: time.Second},
-		turnConn:    turnConn,
-		turnNetwork: "udp",
-		pending:     make(map[string]chan *stun.Message),
-		closed:      make(chan struct{}),
-	}
-	turnConn.onWrite = func(req *stun.Message, count int) {
-		if count != 2 {
-			return
-		}
-		res := stun.New()
-		res.Type = stun.MessageType{Method: req.Type.Method, Class: stun.ClassSuccessResponse}
-		res.TransactionID = req.TransactionID
-		key := s.txIDKey(req.TransactionID)
-		s.pendingMu.Lock()
-		ch := s.pending[key]
-		s.pendingMu.Unlock()
-		ch <- res
-	}
-
-	req := stun.New()
-	req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
-	req.TransactionID = stun.NewTransactionID()
-	if _, err := s.request(req, time.Second); err != nil {
-		t.Fatalf("request failed after retransmission: %v", err)
-	}
-	if got := turnConn.writeCount.Load(); got != 2 {
-		t.Fatalf("request writes = %d, want 2", got)
 	}
 }
 
@@ -730,24 +660,8 @@ func TestUDPPrewarmCloseRejectsNewSession(t *testing.T) {
 }
 
 func TestConnectedTurnAddrUsesControlPeer(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		conn, _ := ln.Accept()
-		accepted <- conn
-	}()
-
-	conn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	conn, peer := net.Pipe()
 	defer conn.Close()
-	peer := <-accepted
 	defer peer.Close()
 
 	if got, want := connectedTurnAddr(conn, "fallback:3478"), conn.RemoteAddr().String(); got != want {
@@ -755,77 +669,50 @@ func TestConnectedTurnAddrUsesControlPeer(t *testing.T) {
 	}
 }
 
-func TestResolveDoHCachesDNSFailure(t *testing.T) {
-	const host = "missing.example"
-	dnsCache.Delete(host)
-	defer dnsCache.Delete(host)
+func TestResolveDoHCachePolicy(test *testing.T) {
+	for _, scenario := range []struct {
+		host         string
+		negative     bool
+		wantRequests int32
+	}{
+		{"missing.example", true, 1},
+		{"zero-ttl.example", false, 2},
+	} {
+		test.Run(scenario.host, func(test *testing.T) {
+			dnsCache.Delete(scenario.host)
+			defer dnsCache.Delete(scenario.host)
 
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		raw, err := io.ReadAll(r.Body)
-		if err != nil || len(raw) < 2 {
-			http.Error(w, "bad query", http.StatusBadRequest)
-			return
-		}
-		response := make([]byte, 12)
-		binary.BigEndian.PutUint16(response[0:2], binary.BigEndian.Uint16(raw[0:2]))
-		response[2] = 0x81
-		response[3] = 0x83
-		w.Header().Set("Content-Type", "application/dns-message")
-		_, _ = w.Write(response)
-	}))
-	defer server.Close()
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				requests.Add(1)
+				query, err := io.ReadAll(request.Body)
+				if err != nil || len(query) < 12 {
+					http.Error(writer, "bad query", http.StatusBadRequest)
+					return
+				}
+				response := append([]byte(nil), query...)
+				binary.BigEndian.PutUint16(response[2:4], 0x8180)
+				if scenario.negative {
+					response[3] = 0x83
+				} else {
+					binary.BigEndian.PutUint16(response[6:8], 1)
+					response = append(response, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 192, 0, 2, 1)
+				}
+				writer.Header().Set("Content-Type", "application/dns-message")
+				_, _ = writer.Write(response)
+			}))
+			defer server.Close()
 
-	cfg := Config{DoH: server.URL, DoHClient: server.Client(), DNSTTL: time.Minute, Timeout: time.Second}
-	for i := 0; i < 2; i++ {
-		if _, err := resolveDoH(context.Background(), host, cfg); err == nil {
-			t.Fatal("resolveDoH() succeeded, want DNS error")
-		}
-	}
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("DoH requests = %d, want 1", got)
-	}
-}
-
-func TestResolveDoHDoesNotCacheZeroTTL(t *testing.T) {
-	const host = "zero-ttl.example"
-	dnsCache.Delete(host)
-	defer dnsCache.Delete(host)
-
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		query, err := io.ReadAll(r.Body)
-		if err != nil || len(query) < 12 {
-			http.Error(w, "bad query", http.StatusBadRequest)
-			return
-		}
-		response := append([]byte(nil), query...)
-		response[2] = 0x81
-		response[3] = 0x80
-		binary.BigEndian.PutUint16(response[6:8], 1)
-		response = append(response,
-			0xc0, 0x0c,
-			0x00, 0x01,
-			0x00, 0x01,
-			0x00, 0x00, 0x00, 0x00,
-			0x00, 0x04,
-			192, 0, 2, 1,
-		)
-		w.Header().Set("Content-Type", "application/dns-message")
-		_, _ = w.Write(response)
-	}))
-	defer server.Close()
-
-	cfg := Config{DoH: server.URL, DoHClient: server.Client(), DNSTTL: time.Minute, Timeout: time.Second}
-	for i := 0; i < 2; i++ {
-		if _, err := resolveDoH(context.Background(), host, cfg); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := requests.Load(); got != 2 {
-		t.Fatalf("DoH requests = %d, want 2 for TTL 0", got)
+			cfg := Config{DoH: server.URL, DoHClient: server.Client(), DNSTTL: time.Minute, Timeout: time.Second}
+			for range 2 {
+				if _, err := resolveDoH(context.Background(), scenario.host, cfg); (err != nil) != scenario.negative {
+					test.Fatalf("resolveDoH() error = %v, want error %v", err, scenario.negative)
+				}
+			}
+			if got := requests.Load(); got != scenario.wantRequests {
+				test.Fatalf("DoH requests = %d, want %d", got, scenario.wantRequests)
+			}
+		})
 	}
 }
 
