@@ -31,7 +31,6 @@ type udpSession struct {
 	pendingMu    sync.Mutex
 	pending      map[string]chan *stun.Message
 	permissions  map[[4]byte]time.Time
-	permPending  map[[4]byte]struct{}
 	permissionMu sync.Mutex
 	socksUDPBuf  []byte
 	sendBuf      []byte
@@ -149,7 +148,6 @@ func newUDPSessionWithNetwork(cfg Config, clientTCP net.Conn, localUDP *net.UDPC
 		turnNetwork: network,
 		pending:     make(map[string]chan *stun.Message),
 		permissions: make(map[[4]byte]time.Time),
-		permPending: make(map[[4]byte]struct{}),
 		sendTxID:    uint64(time.Now().UnixNano()),
 		closed:      make(chan struct{}),
 	}
@@ -1046,49 +1044,43 @@ func (s *udpSession) ensurePermission(ip net.IP) error {
 		return errors.New("only IPv4 is supported")
 	}
 
-	now := time.Now()
 	s.permissionMu.Lock()
 	exp, ok := s.permissions[key]
-	if ok && now.Before(exp) {
-		s.permissionMu.Unlock()
-		return nil
-	}
-	if _, ok := s.permPending[key]; ok {
-		s.permissionMu.Unlock()
-		return nil
-	}
 	s.permissionMu.Unlock()
-
-	req, err := s.buildCreatePermission(ip)
-	if err != nil {
-		return err
-	}
-
-	// Queue CreatePermission before the Send Indication, but do not wait for
-	// the response. This removes one TURN RTT from the first UDP packet.
-	s.permissionMu.Lock()
-	exp, ok = s.permissions[key]
 	if ok && time.Now().Before(exp) {
-		s.permissionMu.Unlock()
 		return nil
 	}
-	if _, ok := s.permPending[key]; ok {
-		s.permissionMu.Unlock()
-		return nil
-	}
-	s.permPending[key] = struct{}{}
-	s.permissionMu.Unlock()
 
-	txKey, ch, err := s.sendPermissionRequest(req, 5*time.Second)
-	if err != nil {
-		s.permissionMu.Lock()
-		delete(s.permPending, key)
-		s.permissionMu.Unlock()
-		return err
+	// Confirm permission before sending the first packet to a new peer.
+	// ponytail: this UDP reader waits here; add per-peer queues only if measured stalls justify them.
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := s.buildCreatePermission(ip)
+		if err != nil {
+			return err
+		}
+		res, err := s.request(req, 5*time.Second)
+		if err != nil {
+			return err
+		}
+		if res.Type.Class == stun.ClassSuccessResponse {
+			s.permissionMu.Lock()
+			s.permissions[key] = time.Now().Add(240 * time.Second)
+			s.permissionMu.Unlock()
+			return nil
+		}
+		stale, err := s.updateStaleNonce(res)
+		if stale {
+			if err != nil {
+				return err
+			}
+			if attempt == 0 {
+				continue
+			}
+		}
+		code, reason := getErrorCode(res)
+		return fmt.Errorf("permission error %d %s", code, reason)
 	}
-	go s.finishPermission(key, req, txKey, ch)
-
-	return nil
+	return fmt.Errorf("permission error %d Stale Nonce", staleNonceCode)
 }
 
 func (s *udpSession) buildCreatePermission(ip net.IP) (*stun.Message, error) {
@@ -1102,130 +1094,6 @@ func (s *udpSession) buildCreatePermission(ip net.IP) (*stun.Message, error) {
 		return nil, err
 	}
 	return req, nil
-}
-
-func (s *udpSession) sendPermissionRequest(req *stun.Message, timeout time.Duration) (string, chan *stun.Message, error) {
-	ch := make(chan *stun.Message, 1)
-	txKey := s.txIDKey(req.TransactionID)
-
-	s.pendingMu.Lock()
-	s.pending[txKey] = ch
-	s.pendingMu.Unlock()
-
-	if err := s.writeRequest(req, timeout); err != nil {
-		s.pendingMu.Lock()
-		delete(s.pending, txKey)
-		s.pendingMu.Unlock()
-		return "", nil, err
-	}
-
-	return txKey, ch, nil
-}
-
-func (s *udpSession) finishPermission(key [4]byte, req *stun.Message, txKey string, ch chan *stun.Message) {
-	defer func() {
-		s.pendingMu.Lock()
-		delete(s.pending, txKey)
-		s.pendingMu.Unlock()
-
-		s.permissionMu.Lock()
-		delete(s.permPending, key)
-		s.permissionMu.Unlock()
-	}()
-
-	res, err := s.waitForResponse(req, ch, 5*time.Second)
-	if err == nil {
-		if validateErr := validateSTUNResponse(req, res); validateErr != nil {
-			err = validateErr
-		} else if validateErr := s.validateResponseIntegrity(res); validateErr != nil {
-			err = validateErr
-		}
-	}
-	if err == nil {
-		if res.Type.Class != stun.ClassSuccessResponse {
-			code, reason := getErrorCode(res)
-			if code == staleNonceCode {
-				if _, err := s.updateStaleNonce(res); err != nil {
-					if s.cfg.LogVerbose {
-						log.Printf("permission stale nonce update failed: %v", err)
-					}
-				} else if s.retryPermission(key) {
-					return
-				}
-			}
-			if s.cfg.LogVerbose {
-				log.Printf("permission error %d %s", code, reason)
-			}
-			return
-		}
-		s.permissionMu.Lock()
-		s.permissions[key] = time.Now().Add(240 * time.Second)
-		s.permissionMu.Unlock()
-		return
-	}
-	if errors.Is(err, errTURNRequestTimeout) {
-		if s.cfg.LogVerbose {
-			log.Printf("CreatePermission timed out")
-		}
-	}
-}
-
-func (s *udpSession) retryPermission(key [4]byte) bool {
-	ip := net.IPv4(key[0], key[1], key[2], key[3])
-	req, err := s.buildCreatePermission(ip)
-	if err != nil {
-		if s.cfg.LogVerbose {
-			log.Printf("permission retry build failed %s: %v", ip.String(), err)
-		}
-		return false
-	}
-
-	txKey, ch, err := s.sendPermissionRequest(req, 5*time.Second)
-	if err != nil {
-		if s.cfg.LogVerbose {
-			log.Printf("permission retry send failed %s: %v", ip.String(), err)
-		}
-		return false
-	}
-	defer func() {
-		s.pendingMu.Lock()
-		delete(s.pending, txKey)
-		s.pendingMu.Unlock()
-	}()
-
-	res, waitErr := s.waitForResponse(req, ch, 5*time.Second)
-	if waitErr == nil {
-		if err := validateSTUNResponse(req, res); err != nil {
-			waitErr = err
-		} else if err := s.validateResponseIntegrity(res); err != nil {
-			waitErr = err
-		}
-	}
-	if waitErr == nil {
-		if res.Type.Class == stun.ClassSuccessResponse {
-			s.permissionMu.Lock()
-			s.permissions[key] = time.Now().Add(240 * time.Second)
-			s.permissionMu.Unlock()
-			if s.cfg.LogVerbose {
-				log.Printf("CreatePermission recovered after stale nonce for %s", ip.String())
-			}
-			return true
-		}
-		code, reason := getErrorCode(res)
-		if code == staleNonceCode {
-			if _, err := s.updateStaleNonce(res); err != nil && s.cfg.LogVerbose {
-				log.Printf("permission retry stale nonce update failed: %v", err)
-			}
-		}
-		if s.cfg.LogVerbose {
-			log.Printf("permission retry error %d %s", code, reason)
-		}
-	} else if errors.Is(waitErr, errTURNRequestTimeout) {
-		if s.cfg.LogVerbose {
-			log.Printf("CreatePermission retry timed out")
-		}
-	}
-	return false
 }
 
 func permissionKey(ip net.IP) ([4]byte, bool) {

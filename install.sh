@@ -105,12 +105,16 @@ set_runtime_owner() {
   run_root chown "$RUN_USER" "$1"
 }
 
+quote_env_value() {
+  printf '%s\n' "$1" | sed 's/[\\"]/\\&/g; s/^/"/; s/$/"/'
+}
+
 write_config_values() {
-  listen_addr=$1
-  turn_servers=$2
-  doh_url=$3
-  panel_username=$4
-  panel_password=$5
+  listen_addr=$(quote_env_value "$1")
+  turn_servers=$(quote_env_value "$2")
+  doh_url=$(quote_env_value "$3")
+  panel_username=$(quote_env_value "$4")
+  panel_password=$(quote_env_value "$5")
   tmp_config=$(mktemp)
   cat > "$tmp_config" <<EOF
 LISTEN=$listen_addr

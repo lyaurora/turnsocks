@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,34 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestPanelPasswordRoundTrip(t *testing.T) {
+	for _, password := range []string{"plain", "demo-password'", "'quoted'", "\"quoted\"", "pa\\ss\"'", "a\\n\\t$pass"} {
+		t.Run(password, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.env")
+			if err := os.WriteFile(path, []byte("LISTEN=127.0.0.1:1080\nDOH=https://cloudflare-dns.com/dns-query\nTURN_SERVERS=\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			body, err := json.Marshal(configRequest{
+				Listen: defaultProxyListen, DoH: defaultDoH,
+				PanelAuthEnabled: true, PanelUsername: "admin", PanelPassword: password,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := &app{configPath: path}
+			rec := httptest.NewRecorder()
+			a.handleUpdateConfig(rec, httptest.NewRequest(http.MethodPost, "/api/config/update", bytes.NewReader(body)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("save failed: %s", rec.Body.String())
+			}
+			auth, _, err := loadPanelAuth(path)
+			if err != nil || !auth.valid("admin", password) {
+				t.Fatalf("saved password cannot log in: %v", err)
+			}
+		})
+	}
+}
 
 func TestWriteRuntimeState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "turnsocks.state")

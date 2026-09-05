@@ -56,3 +56,27 @@ func ParseServer(raw string) (Server, error) {
 	}
 	return server, nil
 }
+
+// DecodeEnvValue accepts plain values and paired shell-style quotes.
+func DecodeEnvValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 || value[0] != value[len(value)-1] {
+		return value
+	}
+	switch value[0] {
+	case '\'':
+		return value[1 : len(value)-1]
+	case '"':
+		return strings.NewReplacer(`\\`, `\`, `\"`, `"`, `\$`, `$`, "\\`", "`").Replace(value[1 : len(value)-1])
+	default:
+		return value
+	}
+}
+
+// EncodeEnvValue preserves single-line values when read by Go or systemd.
+func EncodeEnvValue(value string) string {
+	if value == strings.TrimSpace(value) && !strings.ContainsAny(value, "\"'\\") {
+		return value
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
+}

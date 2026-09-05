@@ -235,6 +235,8 @@ func parseDNSAResponse(msg []byte, wantID uint16, host string, maxTTL time.Durat
 		offset += 4
 	}
 
+	var ip net.IP
+	ttl := time.Duration(-1)
 	for i := 0; i < answers; i++ {
 		offset, err = skipDNSName(msg, offset)
 		if err != nil {
@@ -252,20 +254,27 @@ func parseDNSAResponse(msg []byte, wantID uint16, host string, maxTTL time.Durat
 			return nil, 0, errors.New("short DNS answer data")
 		}
 		if answerType == 1 && answerClass == 1 && rdLen == net.IPv4len {
-			ip := net.IPv4(msg[offset], msg[offset+1], msg[offset+2], msg[offset+3])
-			if answerTTL == 0 {
-				return ip, 0, nil
+			if ip == nil {
+				ip = net.IPv4(msg[offset], msg[offset+1], msg[offset+2], msg[offset+3])
 			}
-			ttl := time.Duration(answerTTL) * time.Second
-			if maxTTL > 0 && maxTTL < ttl {
-				ttl = maxTTL
+		}
+		// ponytail: the minimum answer TTL is conservative; track CNAME owners if it causes excess lookups.
+		if answerClass == 1 && (answerType == 5 || answerType == 1 && rdLen == net.IPv4len) {
+			recordTTL := time.Duration(answerTTL) * time.Second
+			if ttl < 0 || recordTTL < ttl {
+				ttl = recordTTL
 			}
-			return ip, ttl, nil
 		}
 		offset += rdLen
 	}
 
-	return nil, 0, fmt.Errorf("no A record for %s", host)
+	if ip == nil {
+		return nil, 0, fmt.Errorf("no A record for %s", host)
+	}
+	if maxTTL > 0 && maxTTL < ttl {
+		ttl = maxTTL
+	}
+	return ip, ttl, nil
 }
 
 func skipDNSName(msg []byte, offset int) (int, error) {

@@ -58,7 +58,7 @@ func readProxyConfig(path string) (proxyConfig, error) {
 		if !ok {
 			return proxyConfig{}, fmt.Errorf("config.env 第 %d 行格式错误", lineNo+1)
 		}
-		value = strings.Trim(strings.TrimSpace(value), "\"'")
+		value = turncfg.DecodeEnvValue(value)
 		switch strings.TrimSpace(key) {
 		case "LISTEN":
 			if value != "" {
@@ -117,6 +117,9 @@ func updateProxyConfigText(raw string, cfg proxyConfig) string {
 		"DOH":               cfg.DoH,
 		"PANEL_USERNAME":    cfg.PanelUsername,
 		"PANEL_PASSWORD":    cfg.PanelPassword,
+	}
+	for key, value := range values {
+		values[key] = turncfg.EncodeEnvValue(value)
 	}
 	required := []string{"LISTEN", "TURN_SERVERS", "DOH"}
 	authKeys := []string{"PANEL_USERNAME", "PANEL_PASSWORD"}

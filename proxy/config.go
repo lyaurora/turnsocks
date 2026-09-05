@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/lyaurora/turnsocks/turncfg"
 )
 
 type Config struct {
@@ -104,8 +106,7 @@ func loadEnvFile(path string) error {
 		if os.Getenv(key) != "" {
 			continue
 		}
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, "\"'")
+		value = turncfg.DecodeEnvValue(value)
 		if err := os.Setenv(key, value); err != nil {
 			return err
 		}
@@ -130,8 +131,7 @@ func readEnvFileValue(path string, wantKey string) (string, error) {
 		if strings.TrimSpace(key) != wantKey {
 			continue
 		}
-		value = strings.TrimSpace(value)
-		return strings.Trim(value, "\"'"), nil
+		return turncfg.DecodeEnvValue(value), nil
 	}
 	return "", nil
 }

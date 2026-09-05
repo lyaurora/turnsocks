@@ -21,6 +21,7 @@ type recordingSTUNConn struct {
 	closed     atomic.Bool
 	writeCount atomic.Int32
 	onWrite    func(*stun.Message, int)
+	onWriteRaw func([]byte)
 	readFunc   func(time.Duration) (*stun.Message, error)
 }
 
@@ -88,7 +89,10 @@ func (c *recordingSTUNConn) writeMessage(m *stun.Message, _ time.Duration) error
 	return nil
 }
 
-func (c *recordingSTUNConn) writeRaw([]byte, time.Duration) error {
+func (c *recordingSTUNConn) writeRaw(raw []byte, _ time.Duration) error {
+	if c.onWriteRaw != nil {
+		c.onWriteRaw(raw)
+	}
 	return nil
 }
 
@@ -420,6 +424,125 @@ func TestUDPInitialRequestRetransmitsAfterTimeout(t *testing.T) {
 	}
 }
 
+func TestUDPFirstPacketWaitsForPermission(t *testing.T) {
+	local, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnConn := &recordingSTUNConn{}
+	s := &udpSession{
+		cfg:      Config{Timeout: time.Second},
+		localUDP: local, turnConn: turnConn, turnNetwork: "udp",
+		pending:     make(map[string]chan *stun.Message),
+		permissions: make(map[[4]byte]time.Time),
+		closed:      make(chan struct{}),
+	}
+	var granted atomic.Bool
+	sent := make(chan []byte, 2)
+	turnConn.onWriteRaw = func(raw []byte) {
+		if granted.Load() {
+			sent <- append([]byte(nil), raw...)
+		}
+	}
+	turnConn.onWrite = func(req *stun.Message, count int) {
+		// Drop the first permission request, then accept its retransmission.
+		if req.Type.Method != MethodCreatePermission || count != 2 {
+			return
+		}
+		granted.Store(true)
+		res := stun.New()
+		res.Type = stun.MessageType{Method: MethodCreatePermission, Class: stun.ClassSuccessResponse}
+		res.TransactionID = req.TransactionID
+		s.pendingMu.Lock()
+		ch := s.pending[s.txIDKey(req.TransactionID)]
+		s.pendingMu.Unlock()
+		ch <- res
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.readLocalUDPLoop()
+	}()
+	defer func() {
+		s.close()
+		<-done
+	}()
+	client, err := net.DialUDP("udp", nil, local.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	for _, payload := range []byte{1, 2} {
+		if _, err := client.Write([]byte{0, 0, 0, 1, 192, 0, 2, 1, 0, 53, payload}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case raw := <-sent:
+			msg, err := decodeSTUNMessage(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := msg.Get(AttrData)
+			if err != nil || len(data) != 1 || data[0] != payload {
+				t.Fatalf("forwarded payload = %v, err = %v", data, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("UDP payload was lost before permission was established")
+		}
+	}
+	if got := turnConn.writeCount.Load(); got != 2 {
+		t.Fatalf("permission requests = %d, want 2 including the retry", got)
+	}
+}
+
+func TestUDPPermissionRetriesStaleNonce(t *testing.T) {
+	turnConn := &recordingSTUNConn{}
+	s := &udpSession{
+		cfg: Config{Timeout: time.Second}, turnConn: turnConn, turnNetwork: "udp",
+		username: "user", password: "password", realm: stun.Realm("example.org"),
+		nonce: stun.Nonce("old-nonce"), needAuth: true,
+		pending:     make(map[string]chan *stun.Message),
+		permissions: make(map[[4]byte]time.Time),
+		closed:      make(chan struct{}),
+	}
+	defer s.close()
+	var retryNonce stun.Nonce
+	turnConn.onWrite = func(req *stun.Message, count int) {
+		if req.Type.Method != MethodCreatePermission {
+			return
+		}
+		res := stun.New()
+		res.Type = stun.MessageType{Method: MethodCreatePermission, Class: stun.ClassSuccessResponse}
+		res.TransactionID = req.TransactionID
+		if count == 1 {
+			res.Type.Class = stun.ClassErrorResponse
+			stun.ErrorCodeAttribute{Code: stun.CodeStaleNonce, Reason: []byte("Stale Nonce")}.AddTo(res)
+			stun.Nonce("new-nonce").AddTo(res)
+		} else {
+			_ = retryNonce.GetFrom(req)
+			res.WriteHeader()
+			_ = stun.NewLongTermIntegrity(s.username, s.realm.String(), s.password).AddTo(res)
+		}
+		s.pendingMu.Lock()
+		ch := s.pending[s.txIDKey(req.TransactionID)]
+		s.pendingMu.Unlock()
+		ch <- res
+	}
+	ip := net.IPv4(192, 0, 2, 1)
+	if err := s.ensurePermission(ip); err != nil {
+		t.Fatal(err)
+	}
+	if retryNonce.String() != "new-nonce" {
+		t.Fatalf("retry nonce = %q", retryNonce.String())
+	}
+	if err := s.ensurePermission(ip); err != nil {
+		t.Fatal(err)
+	}
+	if got := turnConn.writeCount.Load(); got != 2 {
+		t.Fatalf("cached permission sent another request: %d writes", got)
+	}
+}
+
 func TestUDPPrewarmTakeStopsExpiry(t *testing.T) {
 	turn := turnServerConfig{Addr: "turn.example:3478"}
 	s := &udpSession{closed: make(chan struct{})}
@@ -555,6 +678,50 @@ func TestResolveDoHDoesNotCacheZeroTTL(t *testing.T) {
 	}
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("DoH requests = %d, want 2 for TTL 0", got)
+	}
+}
+
+func TestDNSCacheRespectsCNAMETTL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cnameTTL uint32
+		aFirst   bool
+		maxTTL   time.Duration
+		want     time.Duration
+	}{
+		{"short alias", 1, false, 300 * time.Second, time.Second},
+		{"A before alias", 1, true, 300 * time.Second, time.Second},
+		{"zero alias TTL", 0, true, 300 * time.Second, 0},
+		{"TTL cap", 300, false, time.Minute, time.Minute},
+		{"uncapped", 600, false, 0, 300 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, id, err := buildDNSAQuery("alias.example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			binary.BigEndian.PutUint16(msg[2:4], 0x8180)
+			binary.BigEndian.PutUint16(msg[6:8], 2)
+			target, err := encodeDNSName("target.example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cname := []byte{0xc0, 0x0c, 0, 5, 0, 1}
+			cname = binary.BigEndian.AppendUint32(cname, tc.cnameTTL)
+			cname = binary.BigEndian.AppendUint16(cname, uint16(len(target)))
+			cname = append(cname, target...)
+			a := append([]byte(nil), target...)
+			a = append(a, 0, 1, 0, 1, 0, 0, 1, 44, 0, 4, 192, 0, 2, 1)
+			if tc.aFirst {
+				msg = append(append(msg, a...), cname...)
+			} else {
+				msg = append(append(msg, cname...), a...)
+			}
+			ip, ttl, err := parseDNSAResponse(msg, id, "alias.example", tc.maxTTL)
+			if err != nil || !ip.Equal(net.IPv4(192, 0, 2, 1)) || ttl != tc.want {
+				t.Fatalf("IP = %v, TTL = %s, err = %v; want TTL %s", ip, ttl, err, tc.want)
+			}
+		})
 	}
 }
 
