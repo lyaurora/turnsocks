@@ -9,8 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
+
+	"github.com/lyaurora/turnsocks/dnswire"
 )
 
 func httpClientViaSOCKS(proxyAddr string, timeout time.Duration) *http.Client {
@@ -64,7 +65,10 @@ func testSOCKSUDP(ctx context.Context, proxyAddr string) Check {
 	defer stop()
 	_ = udpConn.SetDeadline(time.Now().Add(8 * time.Second))
 
-	txID, payload := dnsQueryPayload("cloudflare.com")
+	payload, txID, err := dnswire.BuildAQuery("cloudflare.com")
+	if err != nil {
+		return Check{Message: err.Error()}
+	}
 	packet := buildSOCKSUDPDatagram(net.ParseIP("1.1.1.1"), 53, payload)
 	if _, err := udpConn.WriteToUDP(packet, udpAddr); err != nil {
 		return Check{Message: err.Error()}
@@ -173,22 +177,6 @@ func readSOCKS5Addr(conn net.Conn, atyp byte) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported SOCKS5 addr atyp 0x%02x", atyp)
 	}
-}
-
-func dnsQueryPayload(name string) (uint16, []byte) {
-	txID := uint16(time.Now().UnixNano())
-	msg := make([]byte, 12)
-	binary.BigEndian.PutUint16(msg[0:2], txID)
-	binary.BigEndian.PutUint16(msg[2:4], 0x0100)
-	binary.BigEndian.PutUint16(msg[4:6], 1)
-	for _, part := range strings.Split(name, ".") {
-		msg = append(msg, byte(len(part)))
-		msg = append(msg, part...)
-	}
-	msg = append(msg, 0)
-	msg = binary.BigEndian.AppendUint16(msg, 1)
-	msg = binary.BigEndian.AppendUint16(msg, 1)
-	return txID, msg
 }
 
 func buildSOCKSUDPDatagram(ip net.IP, port int, payload []byte) []byte {

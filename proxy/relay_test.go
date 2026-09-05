@@ -777,50 +777,6 @@ func TestResolveDoHDoesNotCacheZeroTTL(t *testing.T) {
 	}
 }
 
-func TestDNSCacheRespectsCNAMETTL(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		cnameTTL uint32
-		aFirst   bool
-		maxTTL   time.Duration
-		want     time.Duration
-	}{
-		{"short alias", 1, false, 300 * time.Second, time.Second},
-		{"A before alias", 1, true, 300 * time.Second, time.Second},
-		{"zero alias TTL", 0, true, 300 * time.Second, 0},
-		{"TTL cap", 300, false, time.Minute, time.Minute},
-		{"uncapped", 600, false, 0, 300 * time.Second},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			msg, id, err := buildDNSAQuery("alias.example")
-			if err != nil {
-				t.Fatal(err)
-			}
-			binary.BigEndian.PutUint16(msg[2:4], 0x8180)
-			binary.BigEndian.PutUint16(msg[6:8], 2)
-			target, err := encodeDNSName("target.example")
-			if err != nil {
-				t.Fatal(err)
-			}
-			cname := []byte{0xc0, 0x0c, 0, 5, 0, 1}
-			cname = binary.BigEndian.AppendUint32(cname, tc.cnameTTL)
-			cname = binary.BigEndian.AppendUint16(cname, uint16(len(target)))
-			cname = append(cname, target...)
-			a := append([]byte(nil), target...)
-			a = append(a, 0, 1, 0, 1, 0, 0, 1, 44, 0, 4, 192, 0, 2, 1)
-			if tc.aFirst {
-				msg = append(append(msg, a...), cname...)
-			} else {
-				msg = append(append(msg, cname...), a...)
-			}
-			ip, ttl, err := parseDNSAResponse(msg, id, "alias.example", tc.maxTTL)
-			if err != nil || !ip.Equal(net.IPv4(192, 0, 2, 1)) || ttl != tc.want {
-				t.Fatalf("IP = %v, TTL = %s, err = %v; want TTL %s", ip, ttl, err, tc.want)
-			}
-		})
-	}
-}
-
 func TestConnectErrorClassification(t *testing.T) {
 	for _, code := range []int{403, 446, 447} {
 		if !isConnectPeerError(code) {

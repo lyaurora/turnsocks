@@ -17,10 +17,6 @@ import (
 )
 
 func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w)
-		return
-	}
 	a.configMu.Lock()
 	cfg, err := readProxyConfig(a.configPath)
 	a.configMu.Unlock()
@@ -43,10 +39,6 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleAddServer(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w)
-		return
-	}
 	req, err := readServerRequest(r)
 	if err != nil {
 		writeAPIError(w, err)
@@ -78,10 +70,6 @@ func (a *app) handleAddServer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleSelectServer(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w)
-		return
-	}
 	req, err := readServerRequest(r)
 	if err != nil {
 		writeAPIError(w, err)
@@ -123,10 +111,6 @@ func (a *app) handleSelectServer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w)
-		return
-	}
 	req, err := readServerRequest(r)
 	if err != nil {
 		writeAPIError(w, err)
@@ -165,10 +149,6 @@ func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleUpdateServerNote(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w)
-		return
-	}
 	req, err := readServerRequest(r)
 	if err != nil {
 		writeAPIError(w, err)
@@ -216,10 +196,6 @@ func (a *app) handleUpdateServerNote(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleRestart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w)
-		return
-	}
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
 	cfg, err := readProxyConfig(a.configPath)
@@ -235,10 +211,6 @@ func (a *app) handleRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w)
-		return
-	}
 	req, err := readConfigRequest(r)
 	if err != nil {
 		writeAPIError(w, err)
@@ -322,10 +294,6 @@ func (a *app) rollbackConfig(previous proxyConfig, previousState runtimeState, c
 }
 
 func (a *app) handleServerTest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w)
-		return
-	}
 	req, err := readServerRequest(r)
 	if err != nil {
 		writeAPIError(w, err)

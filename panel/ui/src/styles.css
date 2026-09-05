@@ -1,27 +1,12 @@
+@import "../../server/theme.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
   --theme-x: 50vw;
   --theme-y: 0px;
-  --background: 240 8% 94%;
-  --foreground: 240 6% 10%;
-  --card: 0 0% 100%;
-  --muted: 240 5% 96%;
-  --muted-foreground: 240 4% 46%;
-  --primary: 239 82% 62%;
-  --primary-hover: 243 75% 55%;
-  --primary-foreground: 0 0% 100%;
-  --border: 240 6% 88%;
-  --input: 240 5% 84%;
-  --ring: 239 82% 62%;
-  --warn: 32 95% 36%;
-  --danger: 0 72% 51%;
-  --ok: 142 72% 30%;
-  --brand-glow: 239 84% 67%;
-  --brand-gradient: linear-gradient(135deg, hsl(239 84% 67%), hsl(258 90% 66%));
 }
 
 ::view-transition-old(root),
@@ -48,26 +33,6 @@
   ::view-transition-new(root) {
     animation: none;
   }
-}
-
-.dark {
-  color-scheme: dark;
-  --background: 240 9% 4%;
-  --foreground: 240 5% 96%;
-  --card: 240 7% 8%;
-  --muted: 240 8% 12%;
-  --muted-foreground: 240 5% 65%;
-  --primary: 234 89% 74%;
-  --primary-hover: 231 92% 80%;
-  --primary-foreground: 240 9% 8%;
-  --border: 240 6% 16%;
-  --input: 240 6% 23%;
-  --ring: 234 89% 74%;
-  --warn: 45 96% 56%;
-  --danger: 0 91% 71%;
-  --ok: 142 69% 58%;
-  --brand-glow: 239 84% 67%;
-  --brand-gradient: linear-gradient(135deg, hsl(239 84% 67%), hsl(258 90% 66%));
 }
 
 * {

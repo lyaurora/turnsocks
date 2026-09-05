@@ -31,29 +31,13 @@ func Run(opts Options) error {
 		return fmt.Errorf("load panel auth failed: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/assets/", a.handleUIAsset)
-	mux.HandleFunc("/", a.handleIndex)
-	mux.HandleFunc("/login", authStore.handleLogin)
-	mux.HandleFunc("/logout", authStore.handleLogout)
-	mux.HandleFunc("/api/state", a.handleState)
-	mux.HandleFunc("/api/servers/add", a.handleAddServer)
-	mux.HandleFunc("/api/servers/select", a.handleSelectServer)
-	mux.HandleFunc("/api/servers/delete", a.handleDeleteServer)
-	mux.HandleFunc("/api/servers/note", a.handleUpdateServerNote)
-	mux.HandleFunc("/api/servers/test", a.handleServerTest)
-	mux.HandleFunc("/api/config/update", a.handleUpdateConfig)
-	mux.HandleFunc("/api/restart", a.handleRestart)
-
-	handler := http.Handler(mux)
-	handler = authStore.wrap(handler)
 	if auth := authStore.current(); auth.enabled() {
 		fmt.Printf("turnsocks panel auth enabled for user %s\n", auth.username)
 	}
 
 	server := &http.Server{
 		Addr:              listen,
-		Handler:           handler,
+		Handler:           a.handler(authStore),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -62,6 +46,23 @@ func Run(opts Options) error {
 		return fmt.Errorf("panel failed: %w", err)
 	}
 	return nil
+}
+
+func (panel *app) handler(authStore *panelAuthStore) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/assets/", panel.handleUIAsset)
+	mux.HandleFunc("/{$}", panel.handleIndex)
+	mux.HandleFunc("/login", authStore.handleLogin)
+	mux.HandleFunc("/logout", authStore.handleLogout)
+	mux.HandleFunc("GET /api/state", panel.handleState)
+	mux.HandleFunc("POST /api/servers/add", panel.handleAddServer)
+	mux.HandleFunc("POST /api/servers/select", panel.handleSelectServer)
+	mux.HandleFunc("POST /api/servers/delete", panel.handleDeleteServer)
+	mux.HandleFunc("POST /api/servers/note", panel.handleUpdateServerNote)
+	mux.HandleFunc("POST /api/servers/test", panel.handleServerTest)
+	mux.HandleFunc("POST /api/config/update", panel.handleUpdateConfig)
+	mux.HandleFunc("POST /api/restart", panel.handleRestart)
+	return authStore.wrap(mux)
 }
 
 func DefaultConfigPath() string {

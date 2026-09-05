@@ -1,6 +1,7 @@
 package server
 
 import (
+	_ "embed"
 	"html"
 	"io/fs"
 	"net/http"
@@ -8,10 +9,6 @@ import (
 )
 
 func (a *app) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	raw, err := fs.ReadFile(a.ui, "ui/dist/index.html")
 	if err != nil {
@@ -40,7 +37,10 @@ func writeLoginPage(w http.ResponseWriter, status int, message string) {
 	_, _ = w.Write([]byte(strings.Replace(loginHTML, "{{ERROR}}", errorHTML, 1)))
 }
 
-const loginHTML = `<!doctype html>
+//go:embed theme.css
+var themeCSS string
+
+var loginHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -56,46 +56,7 @@ const loginHTML = `<!doctype html>
     })();
   </script>
   <style>
-    /* tokens:sync-start -- generated from panel/ui/src/styles.css, do not edit by hand */
-    :root {
-      color-scheme: light;
-      --background: 240 8% 94%;
-      --foreground: 240 6% 10%;
-      --card: 0 0% 100%;
-      --muted: 240 5% 96%;
-      --muted-foreground: 240 4% 46%;
-      --primary: 239 82% 62%;
-      --primary-hover: 243 75% 55%;
-      --primary-foreground: 0 0% 100%;
-      --border: 240 6% 88%;
-      --input: 240 5% 84%;
-      --ring: 239 82% 62%;
-      --warn: 32 95% 36%;
-      --danger: 0 72% 51%;
-      --ok: 142 72% 30%;
-      --brand-glow: 239 84% 67%;
-      --brand-gradient: linear-gradient(135deg, hsl(239 84% 67%), hsl(258 90% 66%));
-    }
-    .dark {
-      color-scheme: dark;
-      --background: 240 9% 4%;
-      --foreground: 240 5% 96%;
-      --card: 240 7% 8%;
-      --muted: 240 8% 12%;
-      --muted-foreground: 240 5% 65%;
-      --primary: 234 89% 74%;
-      --primary-hover: 231 92% 80%;
-      --primary-foreground: 240 9% 8%;
-      --border: 240 6% 16%;
-      --input: 240 6% 23%;
-      --ring: 234 89% 74%;
-      --warn: 45 96% 56%;
-      --danger: 0 91% 71%;
-      --ok: 142 69% 58%;
-      --brand-glow: 239 84% 67%;
-      --brand-gradient: linear-gradient(135deg, hsl(239 84% 67%), hsl(258 90% 66%));
-    }
-    /* tokens:sync-end */
+` + themeCSS + `
     * { box-sizing: border-box; }
     body {
       min-height: 100vh;
