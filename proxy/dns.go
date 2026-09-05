@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -38,7 +39,10 @@ var (
 	dnsLookups  = make(map[string]*dnsLookupCall)
 )
 
-func resolveDoH(host string, cfg Config) (net.IP, error) {
+func resolveDoH(ctx context.Context, host string, cfg Config) (net.IP, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	ip := net.ParseIP(host)
 	if ip != nil {
 		if ip4 := ip.To4(); ip4 != nil {
@@ -60,35 +64,43 @@ func resolveDoH(host string, cfg Config) (net.IP, error) {
 		dnsCache.Delete(queryHost)
 	}
 
-	return resolveDoHOnce(queryHost, cfg)
+	return resolveDoHOnce(ctx, queryHost, cfg)
 }
 
-func resolveDoHOnce(queryHost string, cfg Config) (net.IP, error) {
+func resolveDoHOnce(ctx context.Context, queryHost string, cfg Config) (net.IP, error) {
 	dnsLookupMu.Lock()
-	if call := dnsLookups[queryHost]; call != nil {
-		dnsLookupMu.Unlock()
-		<-call.done
+	call := dnsLookups[queryHost]
+	if call == nil {
+		call = &dnsLookupCall{done: make(chan struct{})}
+		dnsLookups[queryHost] = call
+		// ponytail: shared lookups keep their own timeout; individual waiters can leave early.
+		go func() {
+			lookupCtx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+			defer cancel()
+			ip, err := queryDoH(lookupCtx, queryHost, cfg)
+			if err != nil {
+				cfg.TurnPool.recordFailure("", "DNS 解析", err)
+			}
+			call.result = dnsLookupResult{IP: ip, Err: err}
+			dnsLookupMu.Lock()
+			delete(dnsLookups, queryHost)
+			close(call.done)
+			dnsLookupMu.Unlock()
+		}()
+	}
+	dnsLookupMu.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-call.done:
+		if err := contextError(ctx); err != nil {
+			return nil, err
+		}
 		return call.result.IP, call.result.Err
 	}
-	call := &dnsLookupCall{done: make(chan struct{})}
-	dnsLookups[queryHost] = call
-	dnsLookupMu.Unlock()
-
-	ip, err := queryDoH(queryHost, cfg)
-	if err != nil {
-		cfg.TurnPool.recordFailure("", "DNS 解析", err)
-	}
-	call.result = dnsLookupResult{IP: ip, Err: err}
-
-	dnsLookupMu.Lock()
-	delete(dnsLookups, queryHost)
-	close(call.done)
-	dnsLookupMu.Unlock()
-
-	return ip, err
 }
 
-func queryDoH(queryHost string, cfg Config) (net.IP, error) {
+func queryDoH(ctx context.Context, queryHost string, cfg Config) (net.IP, error) {
 	u, err := buildDoHURL(cfg.DoH)
 	if err != nil {
 		return nil, err
@@ -97,7 +109,7 @@ func queryDoH(queryHost string, cfg Config) (net.IP, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequest("POST", u, bytes.NewReader(query))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(query))
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -167,24 +168,32 @@ func writeSTUNMessage(conn net.Conn, m *stun.Message) error {
 	return writeAll(conn, m.Raw)
 }
 
-func dialTCPKeepAlive(addr string, timeout time.Duration) (net.Conn, error) {
+func dialTCPKeepAlive(ctx context.Context, addr string, timeout time.Duration) (net.Conn, error) {
 	dialer := net.Dialer{Timeout: timeout, KeepAlive: tcpKeepAlivePeriod}
-	conn, err := dialer.Dial("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetKeepAlive(true)
-		_ = tcpConn.SetKeepAlivePeriod(tcpKeepAlivePeriod)
-	}
-	return conn, nil
+	return dialer.DialContext(ctx, "tcp", addr)
 }
 
-func doSTUN(conn net.Conn, m *stun.Message, timeout time.Duration) (*stun.Message, error) {
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+func doSTUN(ctx context.Context, conn net.Conn, m *stun.Message, timeout time.Duration) (response *stun.Message, err error) {
+	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	defer conn.SetDeadline(time.Time{})
+	if err := conn.SetDeadline(setupDeadline(ctx, timeout)); err != nil {
+		return nil, err
+	}
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		_ = conn.SetDeadline(time.Now())
+		close(done)
+	})
+	defer func() {
+		if !stop() {
+			<-done
+		}
+		_ = conn.SetDeadline(time.Time{})
+		if ctxErr := contextError(ctx); ctxErr != nil {
+			response, err = nil, ctxErr
+		}
+	}()
 
 	if err := writeSTUNMessage(conn, m); err != nil {
 		return nil, err

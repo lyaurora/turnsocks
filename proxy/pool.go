@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net"
@@ -86,7 +87,7 @@ func (r *udpSessionRegistry) closeAll() {
 	}
 }
 
-func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, bool, error) {
+func (p *tcpAllocationPool) getOrCreate(ctx *setupContext, cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, bool, error) {
 	key := turn.String()
 
 	p.mu.Lock()
@@ -103,7 +104,7 @@ func (p *tcpAllocationPool) getOrCreate(cfg Config, turn turnServerConfig, peer 
 	}
 	p.mu.Unlock()
 
-	a, err := newReservedTCPAllocation(cfg, turn, peer)
+	a, err := newReservedTCPAllocation(ctx, cfg, turn, peer)
 	if err != nil {
 		return nil, false, err
 	}
@@ -147,7 +148,7 @@ func (p *tcpAllocationPool) addIdle(cfg Config, turn turnServerConfig) error {
 	}
 	p.mu.Unlock()
 
-	a, err := newTCPAllocation(cfg, turn)
+	a, err := newTCPAllocation(&setupContext{Context: context.Background()}, cfg, turn)
 	if err != nil {
 		return err
 	}
@@ -215,7 +216,7 @@ func prewarmUDPAllocation(cfg Config) {
 }
 
 func prewarmDoH(cfg Config) {
-	if _, err := resolveDoH("cloudflare.com", cfg); err != nil && cfg.LogVerbose {
+	if _, err := resolveDoH(context.Background(), "cloudflare.com", cfg); err != nil && cfg.LogVerbose {
 		log.Printf("DoH prewarm failed: %v", err)
 	}
 }
@@ -236,7 +237,7 @@ func (p *udpPrewarmPool) add(cfg Config, turn turnServerConfig) error {
 	p.creating = true
 	p.mu.Unlock()
 
-	s, err := newUDPSessionWithNetwork(cfg, nil, nil, turn, "udp")
+	s, err := newUDPSessionWithNetwork(&setupContext{Context: context.Background()}, cfg, nil, nil, turn, "udp")
 	if err != nil {
 		p.mu.Lock()
 		p.creating = false
@@ -511,8 +512,8 @@ func (p *tcpAllocationPool) retire(turn turnServerConfig, allocation *tcpAllocat
 	allocation.retire()
 }
 
-func newReservedTCPAllocation(cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, error) {
-	a, err := newTCPAllocation(cfg, turn)
+func newReservedTCPAllocation(ctx *setupContext, cfg Config, turn turnServerConfig, peer string) (*tcpAllocation, error) {
+	a, err := newTCPAllocation(ctx, cfg, turn)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -37,13 +38,13 @@ type tcpAllocation struct {
 	closeData   bool
 }
 
-func allocateTCP(conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, stun.Nonce, bool, error) {
+func allocateTCP(ctx *setupContext, conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, stun.Nonce, bool, error) {
 	req := stun.New()
 	req.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
 	req.TransactionID = stun.NewTransactionID()
 	req.Add(AttrRequestedTransport, []byte{0x06, 0x00, 0x00, 0x00})
 
-	res, err := doSTUN(conn, req, cfg.Timeout)
+	res, err := doSTUN(ctx, conn, req, cfg.Timeout)
 	if err != nil {
 		return stun.Realm{}, stun.Nonce{}, false, err
 	}
@@ -80,7 +81,7 @@ func allocateTCP(conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, 
 			return realm, nonce, true, err
 		}
 
-		res2, err := doSTUN(conn, req2, cfg.Timeout)
+		res2, err := doSTUN(ctx, conn, req2, cfg.Timeout)
 		if err != nil {
 			return realm, nonce, true, err
 		}
@@ -106,17 +107,65 @@ func allocateTCP(conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, 
 	return realm, nonce, true, errors.New("allocate authentication retry exhausted")
 }
 
-func dialTurnTCP(cfg Config, targetIP net.IP, targetPort int) (net.Conn, func(), string, error) {
+func dialTurnTCP(ctx *setupContext, cfg Config, targetIP net.IP, targetPort int) (net.Conn, func(), string, error) {
+	type result struct {
+		conn    net.Conn
+		release func()
+		addr    string
+		err     error
+	}
+	ctx.stage.Store("TURN 节点选择")
+	results := make(chan result)
+	// ponytail: one setup worker may finish an in-flight shared control transaction
+	// under its existing timeout after this caller leaves, preserving other peers.
+	go func() {
+		conn, release, addr, err := dialTurnTCPCandidates(ctx, cfg, targetIP, targetPort)
+		select {
+		case results <- result{conn, release, addr, err}:
+		case <-ctx.Done():
+			if conn != nil {
+				_ = conn.Close()
+				release()
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, nil, "", ctx.err()
+	case r := <-results:
+		if err := ctx.err(); err != nil {
+			if r.conn != nil {
+				_ = r.conn.Close()
+				r.release()
+			}
+			return nil, nil, "", err
+		}
+		return r.conn, r.release, r.addr, r.err
+	}
+}
+
+func dialTurnTCPCandidates(ctx *setupContext, cfg Config, targetIP net.IP, targetPort int) (net.Conn, func(), string, error) {
 	var errs []error
 	candidates := cfg.TurnPool.candidates()
 	if len(candidates) == 0 {
 		return nil, nil, "", errors.New("no TURN server candidates")
 	}
 	for _, turn := range candidates {
-		dataConn, release, err := dialTurnTCPWithServer(cfg, turn, targetIP, targetPort)
+		if err := ctx.err(); err != nil {
+			return nil, nil, "", err
+		}
+		dataConn, release, err := dialTurnTCPWithServer(ctx, cfg, turn, targetIP, targetPort)
 		if err == nil {
+			if err := ctx.err(); err != nil {
+				_ = dataConn.Close()
+				release()
+				return nil, nil, "", err
+			}
 			cfg.TurnPool.markSuccess(turn)
 			return dataConn, release, turn.Addr, nil
+		}
+		if ctxErr := ctx.err(); ctxErr != nil {
+			return nil, nil, "", ctxErr
 		}
 		if isTurnServerFailure(err) {
 			cfg.TurnPool.markFailure(turn, err)
@@ -131,14 +180,14 @@ func dialTurnTCP(cfg Config, targetIP net.IP, targetPort int) (net.Conn, func(),
 	return nil, nil, "", errors.Join(errs...)
 }
 
-func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, targetPort int) (net.Conn, func(), error) {
+func dialTurnTCPWithServer(ctx *setupContext, cfg Config, turn turnServerConfig, targetIP net.IP, targetPort int) (net.Conn, func(), error) {
 	peer := tcpPeerKey(targetIP, targetPort)
 	if cfg.TCPAllocs == nil {
-		allocation, err := newTCPAllocation(cfg, turn)
+		allocation, err := newTCPAllocation(ctx, cfg, turn)
 		if err != nil {
 			return nil, nil, err
 		}
-		dataConn, err := allocation.connect(targetIP, targetPort)
+		dataConn, err := allocation.connect(ctx, targetIP, targetPort)
 		if err != nil {
 			allocation.close()
 			return nil, nil, err
@@ -154,11 +203,15 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 	}
 
 	for attempt := 0; ; attempt++ {
-		allocation, reused, err := cfg.TCPAllocs.getOrCreate(cfg, turn, peer)
+		if err := ctx.err(); err != nil {
+			return nil, nil, err
+		}
+		ctx.stage.Store("等待 TURN 会话（" + turn.Addr + "）")
+		allocation, reused, err := cfg.TCPAllocs.getOrCreate(ctx, cfg, turn, peer)
 		if err != nil {
 			return nil, nil, err
 		}
-		dataConn, err := allocation.connect(targetIP, targetPort)
+		dataConn, err := allocation.connect(ctx, targetIP, targetPort)
 		if err == nil && !allocation.trackDataConn(dataConn) {
 			err = net.ErrClosed
 		}
@@ -170,7 +223,9 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 			}, nil
 		}
 		// Remove the failed allocation before allowing another peer to reserve it.
-		if isTurnServerFailure(err) {
+		if ctx.err() != nil {
+			cfg.TCPAllocs.retire(turn, allocation)
+		} else if isTurnServerFailure(err) {
 			cfg.TCPAllocs.invalidate(turn, allocation)
 		} else if isTimeoutError(err) {
 			cfg.TCPAllocs.retire(turn, allocation)
@@ -178,7 +233,7 @@ func dialTurnTCPWithServer(cfg Config, turn turnServerConfig, targetIP net.IP, t
 		allocation.finishConnect()
 		cfg.TCPAllocs.release(turn, allocation, peer)
 		// Retry a stale pooled transport once, before any application data is sent.
-		if attempt != 0 || !reused || !isDisconnectedError(err) {
+		if ctx.err() != nil || attempt != 0 || !reused || !isDisconnectedError(err) {
 			return nil, nil, err
 		}
 	}
@@ -196,14 +251,16 @@ func tcpPeerKey(ip net.IP, port int) string {
 	return net.JoinHostPort(ip.String(), fmt.Sprintf("%d", port))
 }
 
-func newTCPAllocation(cfg Config, turn turnServerConfig) (*tcpAllocation, error) {
+func newTCPAllocation(ctx *setupContext, cfg Config, turn turnServerConfig) (*tcpAllocation, error) {
 	username, password := turn.auth()
-	ctrlConn, err := dialTCPKeepAlive(turn.Addr, shorterTimeout(cfg.Timeout, turnTCPDialTimeout))
+	ctx.stage.Store("TURN TCP 拨号（" + turn.Addr + "）")
+	ctrlConn, err := dialTCPKeepAlive(ctx, turn.Addr, shorterTimeout(cfg.Timeout, turnTCPDialTimeout))
 	if err != nil {
 		return nil, err
 	}
 
-	realm, nonce, needAuth, err := allocateTCP(ctrlConn, cfg, turn)
+	ctx.stage.Store("TURN 认证与分配（" + turn.Addr + "）")
+	realm, nonce, needAuth, err := allocateTCP(ctx, ctrlConn, cfg, turn)
 	if err != nil {
 		ctrlConn.Close()
 		return nil, err
@@ -227,21 +284,34 @@ func newTCPAllocation(cfg Config, turn turnServerConfig) (*tcpAllocation, error)
 	return a, nil
 }
 
-func (a *tcpAllocation) connect(targetIP net.IP, targetPort int) (net.Conn, error) {
+func (a *tcpAllocation) connect(ctx *setupContext, targetIP net.IP, targetPort int) (net.Conn, error) {
+	ctx.stage.Store("等待 TURN 控制连接（" + a.turn.Addr + "）")
 	a.ctrlMu.Lock()
-	connID, err := a.connectPeerLocked(targetIP, targetPort)
+	connID, err := a.connectPeerLocked(ctx, targetIP, targetPort)
 	a.ctrlMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 
-	dataConn, err := dialTCPKeepAlive(a.serverAddr, shorterTimeout(a.cfg.Timeout, turnTCPDialTimeout))
+	if err := ctx.err(); err != nil {
+		return nil, err
+	}
+	ctx.stage.Store("TURN 数据通道拨号（" + a.turn.Addr + "）")
+	dataConn, err := dialTCPKeepAlive(ctx, a.serverAddr, shorterTimeout(a.cfg.Timeout, turnTCPDialTimeout))
 	if err != nil {
 		return nil, err
 	}
+	stop := context.AfterFunc(ctx, func() { _ = dataConn.Close() })
+	defer stop()
 
-	if err := a.bindDataConn(dataConn, connID); err != nil {
+	ctx.stage.Store("TURN 数据通道绑定（" + a.turn.Addr + "）")
+	if err := a.bindDataConn(ctx, dataConn, connID); err != nil {
 		dataConn.Close()
+		return nil, err
+	}
+	stop()
+	if err := ctx.err(); err != nil {
+		_ = dataConn.Close()
 		return nil, err
 	}
 
@@ -255,12 +325,16 @@ func connectedTurnAddr(conn net.Conn, fallback string) string {
 	return fallback
 }
 
-func (a *tcpAllocation) connectPeerLocked(targetIP net.IP, targetPort int) ([]byte, error) {
+func (a *tcpAllocation) connectPeerLocked(ctx *setupContext, targetIP net.IP, targetPort int) ([]byte, error) {
 	if a.closed.Load() {
 		return nil, net.ErrClosed
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
+		if err := ctx.err(); err != nil {
+			return nil, err
+		}
+		ctx.stage.Store("TURN 目标连接（" + a.turn.Addr + "）")
 		connectReq := stun.New()
 		connectReq.Type = stun.MessageType{Method: MethodConnect, Class: stun.ClassRequest}
 		connectReq.TransactionID = stun.NewTransactionID()
@@ -273,7 +347,15 @@ func (a *tcpAllocation) connectPeerLocked(targetIP net.IP, targetPort int) ([]by
 			}
 		}
 
-		connectRes, err := doSTUN(a.ctrlConn, connectReq, a.cfg.Timeout)
+		transactionCtx := context.Context(ctx)
+		a.dataMu.Lock()
+		shared := len(a.dataConns) > 0
+		a.dataMu.Unlock()
+		if shared {
+			// Preserve framing and refreshes for established peers after this caller leaves.
+			transactionCtx = context.Background()
+		}
+		connectRes, err := doSTUN(transactionCtx, a.ctrlConn, connectReq, a.cfg.Timeout)
 		if err != nil {
 			if isTimeoutError(err) {
 				return nil, turnPeerError(err)
@@ -311,8 +393,11 @@ func (a *tcpAllocation) updateAuthFromErrorLocked(res *stun.Message) (bool, erro
 	return updateAuthFromError(res, &a.realm, &a.nonce)
 }
 
-func (a *tcpAllocation) bindDataConn(dataConn net.Conn, connID []byte) error {
+func (a *tcpAllocation) bindDataConn(ctx *setupContext, dataConn net.Conn, connID []byte) error {
 	for attempt := 0; attempt < 2; attempt++ {
+		if err := ctx.err(); err != nil {
+			return err
+		}
 		bind := stun.New()
 		bind.Type = stun.MessageType{Method: MethodConnectionBind, Class: stun.ClassRequest}
 		bind.TransactionID = stun.NewTransactionID()
@@ -326,7 +411,7 @@ func (a *tcpAllocation) bindDataConn(dataConn net.Conn, connID []byte) error {
 			}
 		}
 
-		bindRes, err := doSTUN(dataConn, bind, a.cfg.Timeout)
+		bindRes, err := doSTUN(ctx, dataConn, bind, a.cfg.Timeout)
 		if err != nil {
 			return err
 		}
@@ -531,7 +616,7 @@ func refreshAllocation(conn net.Conn, cfg Config, username string, password stri
 			}
 		}
 
-		res, err := doSTUN(conn, req, cfg.Timeout)
+		res, err := doSTUN(context.Background(), conn, req, cfg.Timeout)
 		if err != nil {
 			return err
 		}

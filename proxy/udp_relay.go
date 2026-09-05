@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -41,7 +42,7 @@ type udpSession struct {
 	closeOnce    sync.Once
 }
 
-func handleUDPAssociate(clientTCP net.Conn, cfg Config) {
+func handleUDPAssociate(ctx *setupContext, clientTCP net.Conn, cfg Config) {
 	localUDP, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		_ = writeSocksReply(clientTCP, 0x01, "0.0.0.0", 0)
@@ -50,8 +51,11 @@ func handleUDPAssociate(clientTCP net.Conn, cfg Config) {
 	tuneUDPConn(localUDP)
 
 	bindPort := localUDP.LocalAddr().(*net.UDPAddr).Port
-	s, turnAddr, err := newUDPSession(cfg, clientTCP, localUDP)
+	s, turnAddr, err := newUDPSession(ctx, cfg, clientTCP, localUDP)
 	if err != nil {
+		if ctx.err() != nil {
+			cfg.TurnPool.recordFailure("", "UDP 关联建立", ctx.err())
+		}
 		log.Printf("UDP TURN failed: %v", err)
 		_ = writeSocksReply(clientTCP, 0x05, "0.0.0.0", 0)
 		localUDP.Close()
@@ -70,6 +74,10 @@ func handleUDPAssociate(clientTCP net.Conn, cfg Config) {
 		s.close()
 		return
 	}
+	if err := ctx.finish(clientTCP); err != nil {
+		s.close()
+		return
+	}
 
 	if cfg.LogVerbose {
 		log.Printf("UDP ASSOCIATE listening on 127.0.0.1:%d via %s", bindPort, turnAddr)
@@ -84,13 +92,16 @@ func handleUDPAssociate(clientTCP net.Conn, cfg Config) {
 	s.close()
 }
 
-func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpSession, string, error) {
+func newUDPSession(ctx *setupContext, cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpSession, string, error) {
 	var errs []error
 	candidates := cfg.TurnPool.candidates()
 	if len(candidates) == 0 {
 		return nil, "", errors.New("no TURN server candidates")
 	}
 	for _, turn := range candidates {
+		if err := ctx.err(); err != nil {
+			return nil, "", err
+		}
 		var err error
 		if cfg.TurnPool.udpAllowed(turn) {
 			if s, turnAddr, ok := cfg.UDPPrewarm.take(cfg, turn, clientTCP, localUDP); ok {
@@ -98,11 +109,14 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 				return s, turnAddr, nil
 			}
 			var s *udpSession
-			s, err = newUDPSessionWithNetwork(cfg, clientTCP, localUDP, turn, "udp")
+			s, err = newUDPSessionWithNetwork(ctx, cfg, clientTCP, localUDP, turn, "udp")
 			if err == nil {
 				cfg.TurnPool.markUDPSuccess(turn)
 				go prewarmUDPAllocation(cfg)
 				return s, turn.Addr + "/udp", nil
+			}
+			if ctxErr := ctx.err(); ctxErr != nil {
+				return nil, "", ctxErr
 			}
 			cfg.TurnPool.markUDPFailure(turn, err)
 			errs = append(errs, fmt.Errorf("%s/udp: %w", turn.Addr, err))
@@ -113,9 +127,15 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 			log.Printf("skip TURN-over-UDP candidate via %s during cooldown", turn.Addr)
 		}
 
-		s, tcpErr := newUDPSessionWithNetwork(cfg, clientTCP, localUDP, turn, "tcp")
+		if err := ctx.err(); err != nil {
+			return nil, "", err
+		}
+		s, tcpErr := newUDPSessionWithNetwork(ctx, cfg, clientTCP, localUDP, turn, "tcp")
 		if tcpErr == nil {
 			return s, turn.Addr + "/tcp", nil
+		}
+		if ctxErr := ctx.err(); ctxErr != nil {
+			return nil, "", ctxErr
 		}
 		cfg.TurnPool.recordFailure(turn.Addr, "TURN UDP（TCP 传输）", tcpErr)
 		errs = append(errs, fmt.Errorf("%s/tcp: %w", turn.Addr, tcpErr))
@@ -128,14 +148,20 @@ func newUDPSession(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpS
 	return nil, "", errors.Join(errs...)
 }
 
-func newUDPSessionWithNetwork(cfg Config, clientTCP net.Conn, localUDP *net.UDPConn, turn turnServerConfig, network string) (*udpSession, error) {
+func newUDPSessionWithNetwork(ctx *setupContext, cfg Config, clientTCP net.Conn, localUDP *net.UDPConn, turn turnServerConfig, network string) (*udpSession, error) {
+	if err := ctx.err(); err != nil {
+		return nil, err
+	}
 	if !cfg.TurnPool.contains(turn) {
 		return nil, errors.New("TURN server removed from pool")
 	}
-	conn, err := dialSTUNConn(network, turn.Addr, cfg.Timeout)
+	ctx.stage.Store("TURN UDP 拨号（" + turn.Addr + "/" + network + "）")
+	conn, err := dialSTUNConn(ctx, network, turn.Addr, cfg.Timeout)
 	if err != nil {
 		return nil, err
 	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.close() })
+	defer stop()
 	username, password := turn.auth()
 
 	s := &udpSession{
@@ -156,8 +182,13 @@ func newUDPSessionWithNetwork(cfg Config, clientTCP net.Conn, localUDP *net.UDPC
 	if network == "udp" {
 		allocateTimeout = shorterTimeout(cfg.Timeout, turnUDPAttemptTimeout)
 	}
-	if err := s.allocate(allocateTimeout); err != nil {
+	ctx.stage.Store("TURN UDP 认证与分配（" + turn.Addr + "/" + network + "）")
+	if err := s.allocate(ctx, allocateTimeout); err != nil {
 		_ = conn.close()
+		return nil, err
+	}
+	if err := ctx.err(); err != nil {
+		s.close()
 		return nil, err
 	}
 	if !cfg.TurnPool.contains(turn) {
@@ -177,15 +208,15 @@ func shorterTimeout(a time.Duration, b time.Duration) time.Duration {
 	return b
 }
 
-func dialSTUNConn(network string, addr string, timeout time.Duration) (stunConn, error) {
+func dialSTUNConn(ctx context.Context, network string, addr string, timeout time.Duration) (stunConn, error) {
 	var (
 		conn net.Conn
 		err  error
 	)
 	if network == "tcp" {
-		conn, err = dialTCPKeepAlive(addr, shorterTimeout(timeout, turnTCPDialTimeout))
+		conn, err = dialTCPKeepAlive(ctx, addr, shorterTimeout(timeout, turnTCPDialTimeout))
 	} else {
-		conn, err = net.DialTimeout(network, addr, timeout)
+		conn, err = (&net.Dialer{Timeout: timeout}).DialContext(ctx, network, addr)
 		if err == nil {
 			tuneUDPConn(conn)
 		}
@@ -513,13 +544,13 @@ func (s *udpSession) updateStaleNonce(res *stun.Message) (bool, error) {
 	return updateAuthFromError(res, &s.realm, &s.nonce)
 }
 
-func (s *udpSession) allocate(timeout time.Duration) error {
+func (s *udpSession) allocate(ctx context.Context, timeout time.Duration) error {
 	req := stun.New()
 	req.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
 	req.TransactionID = stun.NewTransactionID()
 	req.Add(AttrRequestedTransport, []byte{0x11, 0x00, 0x00, 0x00})
 
-	res, err := s.initialRequest(req, timeout)
+	res, err := s.initialRequest(ctx, req, timeout)
 	if err != nil {
 		return err
 	}
@@ -555,7 +586,7 @@ func (s *udpSession) allocate(timeout time.Duration) error {
 			return err
 		}
 
-		res2, err := s.initialRequest(req2, timeout)
+		res2, err := s.initialRequest(ctx, req2, timeout)
 		if err != nil {
 			return err
 		}
@@ -580,11 +611,14 @@ func (s *udpSession) allocate(timeout time.Duration) error {
 	return errors.New("UDP allocate authentication retry exhausted")
 }
 
-func (s *udpSession) initialRequest(req *stun.Message, timeout time.Duration) (*stun.Message, error) {
-	deadline := time.Now().Add(timeout)
+func (s *udpSession) initialRequest(ctx context.Context, req *stun.Message, timeout time.Duration) (*stun.Message, error) {
+	deadline := setupDeadline(ctx, timeout)
 	retryDelay := turnUDPRetryRTO
 
 	for {
+		if err := contextError(ctx); err != nil {
+			return nil, err
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return nil, errTURNRequestTimeout
@@ -906,7 +940,7 @@ func (s *udpSession) readLocalUDPLoop() {
 		}
 
 		if ip == nil {
-			ip, err = resolveDoH(host, s.cfg)
+			ip, err = resolveDoH(context.Background(), host, s.cfg)
 			if err != nil {
 				if s.cfg.LogVerbose {
 					log.Printf("UDP resolve failed %s: %v", host, err)

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -353,7 +354,7 @@ func TestDoSTUNIgnoresUnrelatedResponse(t *testing.T) {
 	req := stun.New()
 	req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
 	req.TransactionID = stun.NewTransactionID()
-	res, err := doSTUN(client, req, time.Second)
+	res, err := doSTUN(context.Background(), client, req, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +418,7 @@ func TestUDPInitialRequestRetransmitsAfterTimeout(t *testing.T) {
 	}
 	s := &udpSession{turnConn: turnConn, turnNetwork: "udp"}
 
-	if _, err := s.initialRequest(req, time.Second); err != nil {
+	if _, err := s.initialRequest(context.Background(), req, time.Second); err != nil {
 		t.Fatalf("initial request failed after retransmission: %v", err)
 	}
 	if got := turnConn.writeCount.Load(); got != 2 {
@@ -726,7 +727,7 @@ func TestResolveDoHCachesDNSFailure(t *testing.T) {
 
 	cfg := Config{DoH: server.URL, DoHClient: server.Client(), DNSTTL: time.Minute, Timeout: time.Second}
 	for i := 0; i < 2; i++ {
-		if _, err := resolveDoH(host, cfg); err == nil {
+		if _, err := resolveDoH(context.Background(), host, cfg); err == nil {
 			t.Fatal("resolveDoH() succeeded, want DNS error")
 		}
 	}
@@ -767,7 +768,7 @@ func TestResolveDoHDoesNotCacheZeroTTL(t *testing.T) {
 
 	cfg := Config{DoH: server.URL, DoHClient: server.Client(), DNSTTL: time.Minute, Timeout: time.Second}
 	for i := 0; i < 2; i++ {
-		if _, err := resolveDoH(host, cfg); err != nil {
+		if _, err := resolveDoH(context.Background(), host, cfg); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -13,6 +13,8 @@
 - 域名目标通过 DoH 解析为 IPv4，并按 DNS TTL 缓存。
 - 支持多节点故障切换，并提供 Web 面板管理配置和测速结果。
 
+每次 SOCKS5 建连（含握手、DNS、TURN 分配及重试）共享总时限，默认 20 秒，可用 `-timeout` 调整；建立后的 TCP/UDP 转发不受这个倒计时限制。共享的 DNS 查询和正在服务其他连接的 TURN 控制事务使用各自的超时收尾，不会因单个请求到期而中断其他连接。
+
 ## 安装
 
 安装最新 Release，并创建 `turnsocks` 与 `turnsocks-panel` systemd 服务：

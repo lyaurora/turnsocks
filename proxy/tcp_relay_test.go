@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"net"
 	"sync"
@@ -109,7 +110,7 @@ func TestDialTurnTCPRecoversStaleAllocation(t *testing.T) {
 				}
 			}
 
-			conn, release, _, err := dialTurnTCP(cfg, net.IPv4(192, 0, 2, 1), 443)
+			conn, release, _, err := dialTurnTCP(&setupContext{Context: context.Background()}, cfg, net.IPv4(192, 0, 2, 1), 443)
 			if err == nil {
 				defer release()
 				defer conn.Close()

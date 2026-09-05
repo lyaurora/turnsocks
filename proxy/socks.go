@@ -6,13 +6,16 @@ import (
 	"io"
 	"log"
 	"net"
-	"time"
 )
 
 func handleSocksConn(conn net.Conn, cfg Config) {
 	defer conn.Close()
+	ctx := startSetup(conn, cfg.Timeout)
+	defer ctx.cancel()
+	defer ctx.stop()
 
-	if err := conn.SetDeadline(time.Now().Add(cfg.Timeout)); err != nil {
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
 		return
 	}
 
@@ -31,17 +34,15 @@ func handleSocksConn(conn net.Conn, cfg Config) {
 		return
 	}
 
-	_ = conn.SetDeadline(time.Time{})
-
 	switch req.Cmd {
 	case 0x01:
 		if req.Port == 0 {
 			_ = writeSocksReply(conn, 0x01, "0.0.0.0", 0)
 			return
 		}
-		handleTCPConnect(conn, cfg, req)
+		handleTCPConnect(ctx, conn, cfg, req)
 	case 0x03:
-		handleUDPAssociate(conn, cfg)
+		handleUDPAssociate(ctx, conn, cfg)
 	default:
 		_ = writeSocksReply(conn, 0x07, "0.0.0.0", 0)
 	}
@@ -174,9 +175,11 @@ func writeAll(conn net.Conn, b []byte) error {
 	return nil
 }
 
-func handleTCPConnect(client net.Conn, cfg Config, req socksRequest) {
-	ip, err := resolveDoH(req.Host, cfg)
+func handleTCPConnect(ctx *setupContext, client net.Conn, cfg Config, req socksRequest) {
+	ctx.stage.Store("DNS 解析")
+	ip, err := resolveDoH(ctx, req.Host, cfg)
 	if err != nil {
+		cfg.TurnPool.recordFailure("", "DNS 解析", err)
 		log.Printf("resolve failed %s: %v", req.Host, err)
 		_ = writeSocksReply(client, 0x04, "0.0.0.0", 0)
 		return
@@ -186,8 +189,11 @@ func handleTCPConnect(client net.Conn, cfg Config, req socksRequest) {
 		log.Printf("TCP CONNECT %s:%d -> %s:%d", req.Host, req.Port, ip.String(), req.Port)
 	}
 
-	dataConn, release, turnAddr, err := dialTurnTCP(cfg, ip, req.Port)
+	dataConn, release, turnAddr, err := dialTurnTCP(ctx, cfg, ip, req.Port)
 	if err != nil {
+		if ctx.err() != nil {
+			cfg.TurnPool.recordFailure("", "连接建立", err)
+		}
 		log.Printf("TURN TCP failed %s:%d: %v", ip.String(), req.Port, err)
 		_ = writeSocksReply(client, 0x05, "0.0.0.0", 0)
 		return
@@ -199,6 +205,9 @@ func handleTCPConnect(client net.Conn, cfg Config, req socksRequest) {
 	defer dataConn.Close()
 
 	if err := writeSocksReply(client, 0x00, "0.0.0.0", 0); err != nil {
+		return
+	}
+	if err := ctx.finish(client); err != nil {
 		return
 	}
 

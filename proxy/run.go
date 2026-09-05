@@ -35,7 +35,7 @@ func Run() {
 	flag.StringVar(&cfg.DoH, "doh", getenv("DOH", "https://cloudflare-dns.com/dns-query"), "DoH endpoint")
 	flag.StringVar(&cfg.StatePath, "state", getenv("STATE_PATH", ""), "runtime state file path")
 	flag.DurationVar(&cfg.DNSTTL, "dns-ttl", 300*time.Second, "DNS cache TTL")
-	flag.DurationVar(&cfg.Timeout, "timeout", 20*time.Second, "network timeout")
+	flag.DurationVar(&cfg.Timeout, "timeout", 20*time.Second, "SOCKS setup total timeout and TURN operation timeout")
 	flag.BoolVar(&cfg.LogVerbose, "v", false, "verbose log")
 	flag.StringVar(&cpuProfile, "cpuprofile", "", "write CPU profile to file")
 	flag.StringVar(&memProfile, "memprofile", "", "write heap profile to file on exit")
