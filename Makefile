@@ -42,6 +42,8 @@ release: panel-ui
 	@(cd "$(DIST_DIR)" && sha256sum turnsocks-linux-* turnsocks-panel-linux-* > SHA256SUMS && LC_ALL=C sort -o SHA256SUMS SHA256SUMS)
 
 check: panel-ui
+	@$(NPM) --prefix "$(PANEL_UI_DIR)" audit --include=dev --audit-level=high
+	@$(GO) run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 	@$(NPM) --prefix "$(PANEL_UI_DIR)" test
 	@sh -n install.sh
 	@$(GO) test ./...

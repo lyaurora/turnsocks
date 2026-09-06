@@ -137,7 +137,7 @@ sudo journalctl -u turnsocks-panel -f
 
 ## 开发
 
-构建需要 [go.mod](go.mod) 指定版本的 Go、Node.js 22（含 npm）和 `make`。
+构建需要 [go.mod](go.mod) 指定版本的 Go、Node.js 24（含 npm）和 `make`。
 
 ```sh
 git clone https://github.com/lyaurora/turnsocks.git
@@ -146,7 +146,7 @@ make check
 make release
 ```
 
-`make check` 会构建前端、运行前后端检查；`make release` 会在 `dist/` 生成 Linux amd64 / arm64 二进制和 `SHA256SUMS`。前端静态文件嵌入面板二进制，部署后由面板直接提供页面。
+`make check` 会构建前端、运行前后端检查，并联网执行 npm 安全审计（包含开发依赖）和 Go 漏洞扫描；npm 高危及以上漏洞或 Go 可达漏洞会阻止检查通过和 CI 发布。`make release` 会在 `dist/` 生成 Linux amd64 / arm64 二进制和 `SHA256SUMS`。前端静态文件嵌入面板二进制，部署后由面板直接提供页面。
 
 从源码安装：
 
