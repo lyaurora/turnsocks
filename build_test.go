@@ -9,6 +9,54 @@ import (
 	"testing"
 )
 
+func TestSourceInstallRefreshesExistingFrontendDependencies(t *testing.T) {
+	installer, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, source, ok := strings.Cut(string(installer), "if [ \"$BUILD_FROM_SOURCE\" = \"1\" ]; then\n")
+	if !ok {
+		t.Fatal("source-build branch not found")
+	}
+	source, _, ok = strings.Cut(source, "\nelif download_release_binaries")
+	if !ok {
+		t.Fatal("source-build branch end not found")
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "panel/ui/node_modules"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, script := range map[string]string{
+		"go": "#!/bin/sh\nexit 0\n",
+		"npm": `#!/bin/sh
+set -eu
+case "$*" in
+  "--prefix panel/ui ci") touch panel/ui/node_modules/refreshed ;;
+  "--prefix panel/ui run build")
+    test -f panel/ui/node_modules/refreshed
+    touch ui-built
+    ;;
+  *) exit 1 ;;
+esac
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Exercise the actual source-build branch without touching system configuration.
+	cmd := exec.Command("sh", "-c", "set -eu\ninstall_binary() { :; }\n"+source)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "SOURCE_CHECKOUT=1", "INSTALL_DIR="+dir, "tmp_dir="+dir,
+		"GO_CMD="+filepath.Join(dir, "go"), "NPM_CMD="+filepath.Join(dir, "npm"))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("source build did not refresh existing dependencies: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ui-built")); err != nil {
+		t.Fatalf("frontend was not built: %v", err)
+	}
+}
+
 func TestBuildStopsOnFailure(t *testing.T) {
 	if _, err := exec.LookPath("make"); err != nil {
 		t.Skip("make is not installed")

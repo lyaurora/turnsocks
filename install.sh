@@ -285,9 +285,7 @@ if [ "$BUILD_FROM_SOURCE" = "1" ]; then
     echo "BUILD_FROM_SOURCE=1 requires Node.js/npm to build the panel UI." >&2
     exit 1
   fi
-  if [ ! -d "panel/ui/node_modules" ]; then
-    "$NPM_CMD" --prefix panel/ui ci
-  fi
+  "$NPM_CMD" --prefix panel/ui ci
   "$NPM_CMD" --prefix panel/ui run build
   CGO_ENABLED=0 "$GO_CMD" build -trimpath -ldflags "-s -w" -o "$tmp_dir/turnsocks" .
   CGO_ENABLED=0 "$GO_CMD" build -trimpath -ldflags "-s -w" -o "$tmp_dir/turnsocks-panel" ./panel
