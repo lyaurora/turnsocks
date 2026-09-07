@@ -45,7 +45,7 @@ function App() {
   const busyRef = useRef(false);
   const testController = useRef<AbortController | null>(null);
   const refreshVersion = useRef(0);
-  const toastTimer = useRef<number>();
+  const toastTimer = useRef<number>(undefined);
   const deleteDialog = useRef<HTMLDialogElement>(null);
 
   const showToast = useCallback((message: string, tone: "info" | "danger" = "info") => {
