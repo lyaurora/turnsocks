@@ -42,6 +42,8 @@ curl -fsSL https://raw.githubusercontent.com/lyaurora/turnsocks/main/install.sh 
 
 ## 面板
 
+浏览器需要 Chrome / Edge 111+、Firefox 128+ 或 Safari 16.4+。
+
 面板默认仅监听本机。在自己的电脑上执行 SSH 端口转发，并保持连接：
 
 ```sh

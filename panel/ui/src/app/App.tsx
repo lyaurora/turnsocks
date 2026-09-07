@@ -233,7 +233,7 @@ function App() {
             <h1 className="text-[17px] font-semibold leading-none text-[hsl(var(--foreground))]">turnsocks</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex h-[34px] items-center gap-2 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-[13px] text-[13px] font-medium leading-none text-[hsl(var(--foreground))] shadow-sm">
+            <span className="inline-flex h-[34px] items-center gap-2 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-[13px] text-[13px] font-medium leading-none text-[hsl(var(--foreground))] shadow-xs">
               {state.service.active ? (
                 <span className="relative flex h-2 w-2">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[hsl(var(--ok))] opacity-60 motion-reduce:animate-none" />
@@ -254,7 +254,7 @@ function App() {
                 退出登录
               </button>
             </form>
-            <div className="flex gap-0.5 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-[3px] shadow-sm">
+            <div className="flex gap-0.5 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-[3px] shadow-xs">
               {(["light", "system", "dark"] as ThemeMode[]).map((mode) => {
                 const Icon = mode === "light" ? IconSun : mode === "system" ? IconMonitor : IconMoon;
                 const label = mode === "light" ? "浅色" : mode === "system" ? "跟随系统" : "深色";
@@ -298,7 +298,7 @@ function App() {
 
       <div aria-atomic="true" aria-live="polite" role="status" className={`pointer-events-none fixed bottom-5 left-1/2 z-50 flex max-w-[min(560px,calc(100%-28px))] -translate-x-1/2 items-center gap-2.5 rounded-[12px] border px-4 py-3 text-[13px] font-medium shadow-[0_8px_30px_rgba(0,0,0,.12)] transition-all ${toast.message ? "opacity-100" : "opacity-0"} ${toast.tone === "danger" ? "border-[hsl(var(--danger))]/30 bg-[hsl(var(--card))]/95 text-[hsl(var(--danger))]" : "border-[hsl(var(--border))] bg-[hsl(var(--card))]/95 text-[hsl(var(--foreground))]"}`}>
         {toast.tone === "danger" && <IconAlert className="h-[15px] w-[15px] flex-none" />}
-        <span className="min-w-0 break-words">{toast.message}</span>
+        <span className="min-w-0 wrap-break-word">{toast.message}</span>
       </div>
 
       <dialog
