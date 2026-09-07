@@ -139,7 +139,7 @@ sudo journalctl -u turnsocks-panel -f
 
 ## 开发
 
-构建需要 [go.mod](go.mod) 指定版本的 Go、Node.js 24（含 npm）和 `make`。
+构建需要 [go.mod](go.mod) 指定版本的 Go、Node.js 24、npm 11 和 `make`。前端工具版本声明在 [package.json](panel/ui/package.json)，CI 从该文件读取 Node.js 版本。
 
 ```sh
 git clone https://github.com/lyaurora/turnsocks.git
