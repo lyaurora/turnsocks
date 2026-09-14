@@ -1,4 +1,4 @@
-import type { FormEvent } from "react";
+import type { SubmitEvent } from "react";
 import { Chip } from "../../components/Chip";
 import { Switch } from "../../components/Switch";
 import { inputClass, labelClass, labelTextClass, primaryButtonClass } from "../../controlClasses";
@@ -9,7 +9,7 @@ type Props = {
   state: PanelState;
   config: ConfigForm;
   busy: boolean;
-  onSubmit: (event: FormEvent) => void;
+  onSubmit: (event: SubmitEvent<HTMLFormElement>) => void;
   onFieldChange: <K extends keyof ConfigForm>(key: K, value: ConfigForm[K]) => void;
 };
 

@@ -16,6 +16,7 @@ func acceptLoop(listener net.Listener, cfg Config) {
 				return
 			}
 			netErr, temporary := err.(net.Error)
+			//lint:ignore SA1019 Match net/http's retry handling for temporary Accept errors.
 			if !temporary || !netErr.Temporary() {
 				log.Printf("accept failed: %v", err)
 				return

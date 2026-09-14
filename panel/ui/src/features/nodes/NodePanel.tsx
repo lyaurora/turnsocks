@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import { Chip } from "../../components/Chip";
 import { IconAlert, IconEdit, IconPlus, IconTrash, IconZap } from "../../components/icons";
 import { iconDangerButtonClass, inputClass, primaryButtonClass, smallButtonClass, softButtonClass, topButtonClass } from "../../controlClasses";
@@ -11,7 +11,7 @@ type Props = {
   testing: ActiveProbe | null;
   locked: boolean;
   onServerInput: (value: string) => void;
-  onAddServer: (event: FormEvent) => void;
+  onAddServer: (event: SubmitEvent<HTMLFormElement>) => void;
   onTestServer: (server: string, mode: ProbeMode) => void;
   onTestAll: (mode: ProbeMode) => void;
   onStopTesting: () => void;

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/stun/v3"
+	"github.com/pion/stun/v4"
 )
 
 // A loopback TURN peer exercises allocation, connection binding, and data relay.

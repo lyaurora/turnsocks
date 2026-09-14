@@ -144,3 +144,37 @@ printf 'test binary for %s\n' "$GOARCH" > "$output"
 		})
 	}
 }
+
+func TestCheckRequiresGoFormatting(t *testing.T) {
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make is not installed")
+	}
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, source string
+		wantFailure  bool
+	}{
+		{"formatted", "package main\n\nfunc main() {}\n", false},
+		{"unformatted", "package main\nfunc main( ) {}\n", true},
+		{"invalid syntax", "package main\nfunc main( {\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, content := range map[string][]byte{"Makefile": makefile, "main.go": []byte(tc.source), "install.sh": nil} {
+				if err := os.WriteFile(filepath.Join(dir, name), content, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("make", "--no-print-directory", "-o", "panel-ui", "check", "GO=true", "NPM=true")
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "MAKEFLAGS=")
+			output, err := cmd.CombinedOutput()
+			if (err != nil) != tc.wantFailure {
+				t.Fatalf("make check error = %v, want failure %v:\n%s", err, tc.wantFailure, output)
+			}
+		})
+	}
+}

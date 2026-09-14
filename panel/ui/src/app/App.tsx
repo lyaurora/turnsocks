@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type SubmitEvent } from "react";
 import { flushSync } from "react-dom";
 import { addServer as addServerRequest, deleteServer, getState, restartProxy, selectServer, testServer as testServerRequest, updateConfig as updateConfigRequest, updateServerNote } from "../api/client";
 import { IconAlert, IconLogout, IconMonitor, IconMoon, IconRefresh, IconRelay, IconSun, IconTrash } from "../components/icons";
@@ -141,7 +141,7 @@ function App() {
     }
   }
 
-  async function addServer(event: FormEvent) {
+  async function addServer(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const server = serverInput.trim();
     if (!server) {
@@ -182,7 +182,7 @@ function App() {
     }
   }
 
-  async function updateConfig(event: FormEvent) {
+  async function updateConfig(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const payload: ConfigForm = {
       listen: config.listen.trim(),

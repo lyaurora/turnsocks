@@ -36,6 +36,9 @@ jobs:
           cache: npm
           cache-dependency-path: panel/ui/package-lock.json
 
+      - name: Set up npm
+        run: npm install --global "$(node -p 'require("./panel/ui/package.json").packageManager')"
+
       - name: Test
         run: make check
 

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/stun/v3"
+	"github.com/pion/stun/v4"
 )
 
 type recordingSTUNConn struct {
@@ -252,6 +252,65 @@ func TestValidateLongTermIntegrity(t *testing.T) {
 	}
 	if err := validateLongTermIntegrity(res, username, "wrong", &realm); err == nil {
 		t.Fatal("response with invalid integrity was accepted")
+	}
+}
+
+func TestSTUNReadersRespectIntegrityBoundary(t *testing.T) {
+	for _, transport := range []string{"tcp", "udp"} {
+		for _, signed := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/signed=%v", transport, signed), func(t *testing.T) {
+				realm := stun.Realm("example.org")
+				connID := []byte{0, 0, 0, 1}
+				response := stun.New()
+				response.Type = stun.MessageType{Method: MethodConnect, Class: stun.ClassSuccessResponse}
+				response.TransactionID = stun.NewTransactionID()
+				if signed {
+					response.Add(AttrConnectionID, connID)
+				}
+				response.WriteHeader()
+				if err := stun.NewLongTermIntegrity("user", realm.String(), "password").AddTo(response); err != nil {
+					t.Fatal(err)
+				}
+				if !signed {
+					response.Add(AttrConnectionID, connID)
+				}
+				if err := stun.Fingerprint.AddTo(response); err != nil {
+					t.Fatal(err)
+				}
+
+				client, server := net.Pipe()
+				defer client.Close()
+				defer server.Close()
+				var reader stunConn = &tcpSTUNConn{conn: client}
+				if transport == "udp" {
+					reader = &udpSTUNConn{conn: client}
+				}
+				written := make(chan error, 1)
+				go func() {
+					written <- (&tcpSTUNConn{conn: server}).writeMessage(response, time.Second)
+				}()
+				decoded, err := reader.readMessage(time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := <-written; err != nil {
+					t.Fatal(err)
+				}
+				if err := validateLongTermIntegrity(decoded, "user", "password", &realm); err != nil {
+					t.Fatal(err)
+				}
+				if err := stun.Fingerprint.Check(decoded); err != nil {
+					t.Fatal(err)
+				}
+				got, err := getConnectionID(decoded)
+				if signed && (err != nil || !bytes.Equal(got, connID)) {
+					t.Fatalf("authenticated CONNECTION-ID = %x, err = %v", got, err)
+				}
+				if !signed && err == nil {
+					t.Fatal("accepted CONNECTION-ID after MESSAGE-INTEGRITY")
+				}
+			})
+		}
 	}
 }
 
