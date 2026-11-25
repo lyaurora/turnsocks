@@ -49,7 +49,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release_id="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/latest" | jq -r '.id' 2>/dev/null || true)"
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/latest" --jq '.id' 2>/dev/null || true)"
           git tag -f latest "$GITHUB_SHA"
           git push -f origin latest
           if [ -n "$release_id" ] && [ "$release_id" != "null" ]; then
