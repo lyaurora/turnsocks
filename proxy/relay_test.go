@@ -362,7 +362,7 @@ func TestRefreshAllocationRetriesUnsignedStaleNonce(t *testing.T) {
 		done <- writeSTUNMessage(server, success)
 	}()
 
-	err := refreshAllocation(client, Config{Timeout: time.Second}, username, password, &realm, &nonce, true)
+	_, err := refreshAllocation(client, Config{Timeout: time.Second}, username, password, &realm, &nonce, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -804,5 +804,146 @@ func TestPruneExpiredPermissions(t *testing.T) {
 	}
 	if _, ok := s.permissions[active]; !ok {
 		t.Fatal("active permission was removed")
+	}
+}
+
+func TestAllocationLifetimeAndPrewarmRefreshDelay(t *testing.T) {
+	msg := stun.New()
+	addLifetime(msg, 300*time.Second)
+	if got := parseAllocationLifetime(msg); got != 300*time.Second {
+		t.Fatalf("parseAllocationLifetime = %v, want 5m", got)
+	}
+	if got := parseAllocationLifetime(stun.New()); got != allocationLifetime {
+		t.Fatalf("default parseAllocationLifetime = %v, want %v", got, allocationLifetime)
+	}
+	if got := refreshIntervalForLifetime(300 * time.Second); got != 150*time.Second {
+		t.Fatalf("refreshIntervalForLifetime(300s) = %v, want 150s", got)
+	}
+	if got := refreshIntervalForLifetime(time.Hour); got != allocationRefreshEvery {
+		t.Fatalf("refreshIntervalForLifetime(1h) = %v, want %v", got, allocationRefreshEvery)
+	}
+	if got := prewarmMaxAgeForLifetime(600 * time.Second); got != 150*time.Second {
+		t.Fatalf("prewarmMaxAgeForLifetime(600s) = %v, want 150s", got)
+	}
+
+	now := time.Now()
+	s := &udpSession{lifetime: 600 * time.Second, allocatedAt: now.Add(-140 * time.Second)}
+	if got := s.initialRefreshDelay(now); got != 160*time.Second {
+		t.Fatalf("initialRefreshDelay = %v, want 160s", got)
+	}
+	s.allocatedAt = now.Add(-400 * time.Second)
+	if got := s.initialRefreshDelay(now); got != 0 {
+		t.Fatalf("overdue initialRefreshDelay = %v, want 0", got)
+	}
+}
+
+func TestUDPCapacityErrorSkipsTCPFallbackAndSuppressesPrewarm(t *testing.T) {
+	udpLn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpLn.Close()
+	port := udpLn.LocalAddr().(*net.UDPAddr).Port
+
+	tcpLn, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+	if err != nil {
+		t.Skip("same port busy on TCP")
+	}
+	defer tcpLn.Close()
+
+	var udpHits, tcpHits atomic.Int32
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, peer, err := udpLn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			udpHits.Add(1)
+			req, err := decodeSTUNMessage(buf[:n])
+			if err != nil {
+				continue
+			}
+			res := stun.New()
+			res.Type = stun.MessageType{Method: req.Type.Method, Class: stun.ClassErrorResponse}
+			res.TransactionID = req.TransactionID
+			_ = (stun.ErrorCodeAttribute{Code: stun.CodeInsufficientCapacity, Reason: []byte("Cannot create socket")}).AddTo(res)
+			res.WriteHeader()
+			_, _ = udpLn.WriteToUDP(res.Raw, peer)
+		}
+	}()
+	go func() {
+		for {
+			conn, err := tcpLn.Accept()
+			if err != nil {
+				return
+			}
+			tcpHits.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	turn := turnServerConfig{Addr: udpLn.LocalAddr().String()}
+	cfg := Config{
+		Timeout:    time.Second,
+		TurnPool:   newTurnPool([]turnServerConfig{turn}, time.Minute, ""),
+		UDPPrewarm: newUDPPrewarmPool(),
+	}
+	defer cfg.UDPPrewarm.close()
+
+	if _, _, err := newUDPSession(&setupContext{Context: context.Background()}, cfg, nil, nil); err == nil || !bytes.Contains([]byte(err.Error()), []byte("508")) {
+		t.Fatalf("first 508 error = %v, want 508", err)
+	}
+	if tcpHits.Load() != 0 {
+		t.Fatalf("508 triggered %d TCP fallback attempts, want 0", tcpHits.Load())
+	}
+	if cfg.TurnPool.udpPrewarmAllowed(turn) {
+		t.Fatal("UDP prewarm stayed allowed after 508 capacity error")
+	}
+	if _, _, err := newUDPSession(&setupContext{Context: context.Background()}, cfg, nil, nil); !errors.Is(err, errUDPCapacityCooldown) {
+		t.Fatalf("second attempt during 508 cooldown = %v, want errUDPCapacityCooldown", err)
+	}
+	if udpHits.Load() != 1 || tcpHits.Load() != 0 {
+		t.Fatalf("cooldown still hammered TURN server: udp=%d tcp=%d", udpHits.Load(), tcpHits.Load())
+	}
+}
+
+func TestWriteSocksReplyIPv6AndLocalUDPBindIP(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- writeSocksReply(server, 0x00, "::1", 5353)
+	}()
+	var reply [22]byte
+	if _, err := io.ReadFull(client, reply[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if reply[3] != 0x04 || !net.IP(reply[4:20]).Equal(net.IPv6loopback) || binary.BigEndian.Uint16(reply[20:22]) != 5353 {
+		t.Fatalf("IPv6 SOCKS reply = %x", reply)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	dialed, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dialed.Close()
+	accepted, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer accepted.Close()
+	if got := localUDPBindIP(accepted); !got.Equal(net.IPv4(127, 0, 0, 1)) {
+		t.Fatalf("localUDPBindIP = %v, want 127.0.0.1", got)
 	}
 }

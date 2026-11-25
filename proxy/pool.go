@@ -201,10 +201,13 @@ func prewarmUDPAllocation(cfg Config) {
 		return
 	}
 	turn := candidates[0]
-	if !cfg.TurnPool.udpAllowed(turn) {
+	if !cfg.TurnPool.udpPrewarmAllowed(turn) {
 		return
 	}
 	if err := cfg.UDPPrewarm.add(cfg, turn); err != nil {
+		if isCapacityError(err) {
+			cfg.TurnPool.markUDPCapacityFailure(turn, err)
+		}
 		if cfg.LogVerbose {
 			log.Printf("UDP allocation prewarm failed via %s: %v", turn.Addr, err)
 		}
@@ -247,17 +250,18 @@ func (p *udpPrewarmPool) add(cfg Config, turn turnServerConfig) error {
 
 	p.mu.Lock()
 	p.creating = false
-	if p.closed || (p.session != nil && !p.session.isClosed()) {
+	if p.closed || (p.session != nil && !p.session.isClosed()) || (cfg.TurnPool != nil && !cfg.TurnPool.contains(turn)) {
 		p.mu.Unlock()
 		s.close()
 		return nil
 	}
+	maxAge := prewarmMaxAgeForLifetime(s.lifetime)
 	p.session = s
 	p.turnKey = key
 	p.network = "udp"
 	p.created = time.Now()
 	p.stopExpiryLocked()
-	p.expiry = time.AfterFunc(allocationRefreshEvery, func() {
+	p.expiry = time.AfterFunc(maxAge, func() {
 		p.expireIdle(cfg, s)
 	})
 	p.mu.Unlock()
@@ -272,14 +276,13 @@ func (p *udpPrewarmPool) take(cfg Config, turn turnServerConfig, clientTCP net.C
 
 	p.mu.Lock()
 	s := p.session
-	if s == nil || p.turnKey != key || p.network != "udp" || time.Since(p.created) >= allocationRefreshEvery || s.isClosed() {
+	if s == nil || p.turnKey != key || p.network != "udp" || time.Since(p.created) >= prewarmMaxAgeForLifetime(s.lifetime) || s.isClosed() {
 		p.session = nil
 		p.stopExpiryLocked()
 		p.mu.Unlock()
 		if s != nil {
 			s.close()
 		}
-		go prewarmUDPAllocation(cfg)
 		return nil, "", false
 	}
 	p.session = nil

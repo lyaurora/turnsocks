@@ -8,11 +8,14 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/pion/stun/v4"
 )
+
+var errUDPCapacityCooldown = errors.New("TURN UDP capacity cooldown active")
 
 type udpSession struct {
 	cfg          Config
@@ -26,6 +29,10 @@ type udpSession struct {
 	realm        stun.Realm
 	nonce        stun.Nonce
 	needAuth     bool
+	lifetime     time.Duration
+	allocatedAt  time.Time
+	ctx          context.Context
+	cancel       context.CancelFunc
 	authMu       sync.Mutex
 	writeMu      sync.Mutex
 	trafficOnce  sync.Once
@@ -42,8 +49,21 @@ type udpSession struct {
 	closeOnce    sync.Once
 }
 
+func localUDPBindIP(clientTCP net.Conn) net.IP {
+	if clientTCP != nil {
+		if tcpAddr, ok := clientTCP.LocalAddr().(*net.TCPAddr); ok && tcpAddr.IP != nil && !tcpAddr.IP.IsUnspecified() {
+			if ip4 := tcpAddr.IP.To4(); ip4 != nil {
+				return ip4
+			}
+			return tcpAddr.IP
+		}
+	}
+	return net.IPv4(127, 0, 0, 1)
+}
+
 func handleUDPAssociate(ctx *setupContext, clientTCP net.Conn, cfg Config) {
-	localUDP, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	bindIP := localUDPBindIP(clientTCP)
+	localUDP, err := net.ListenUDP("udp", &net.UDPAddr{IP: bindIP, Port: 0})
 	if err != nil {
 		_ = writeSocksReply(clientTCP, 0x01, "0.0.0.0", 0)
 		return
@@ -56,7 +76,9 @@ func handleUDPAssociate(ctx *setupContext, clientTCP net.Conn, cfg Config) {
 		if ctx.err() != nil {
 			cfg.TurnPool.recordFailure("", "UDP 关联建立", ctx.err())
 		}
-		log.Printf("UDP TURN failed: %v", err)
+		if !errors.Is(err, errUDPCapacityCooldown) || cfg.LogVerbose {
+			log.Printf("UDP TURN failed: %v", err)
+		}
 		_ = writeSocksReply(clientTCP, 0x05, "0.0.0.0", 0)
 		localUDP.Close()
 		return
@@ -70,7 +92,7 @@ func handleUDPAssociate(ctx *setupContext, clientTCP net.Conn, cfg Config) {
 		defer cfg.UDPSessions.remove(s)
 	}
 
-	if err := writeSocksReply(clientTCP, 0x00, "127.0.0.1", bindPort); err != nil {
+	if err := writeSocksReply(clientTCP, 0x00, bindIP.String(), bindPort); err != nil {
 		s.close()
 		return
 	}
@@ -80,7 +102,7 @@ func handleUDPAssociate(ctx *setupContext, clientTCP net.Conn, cfg Config) {
 	}
 
 	if cfg.LogVerbose {
-		log.Printf("UDP ASSOCIATE listening on 127.0.0.1:%d via %s", bindPort, turnAddr)
+		log.Printf("UDP ASSOCIATE listening on %s via %s", localUDP.LocalAddr().String(), turnAddr)
 	}
 
 	go s.readTurnLoop()
@@ -93,7 +115,8 @@ func handleUDPAssociate(ctx *setupContext, clientTCP net.Conn, cfg Config) {
 }
 
 func newUDPSession(ctx *setupContext, cfg Config, clientTCP net.Conn, localUDP *net.UDPConn) (*udpSession, string, error) {
-	var errs []error
+	var errMsgs []string
+	var capacityCooling bool
 	candidates := cfg.TurnPool.candidates()
 	if len(candidates) == 0 {
 		return nil, "", errors.New("no TURN server candidates")
@@ -102,14 +125,12 @@ func newUDPSession(ctx *setupContext, cfg Config, clientTCP net.Conn, localUDP *
 		if err := ctx.err(); err != nil {
 			return nil, "", err
 		}
-		var err error
 		if cfg.TurnPool.udpAllowed(turn) {
 			if s, turnAddr, ok := cfg.UDPPrewarm.take(cfg, turn, clientTCP, localUDP); ok {
 				cfg.TurnPool.markUDPSuccess(turn)
 				return s, turnAddr, nil
 			}
-			var s *udpSession
-			s, err = newUDPSessionWithNetwork(ctx, cfg, clientTCP, localUDP, turn, "udp")
+			s, err := newUDPSessionWithNetwork(ctx, cfg, clientTCP, localUDP, turn, "udp")
 			if err == nil {
 				cfg.TurnPool.markUDPSuccess(turn)
 				go prewarmUDPAllocation(cfg)
@@ -118,11 +139,19 @@ func newUDPSession(ctx *setupContext, cfg Config, clientTCP net.Conn, localUDP *
 			if ctxErr := ctx.err(); ctxErr != nil {
 				return nil, "", ctxErr
 			}
+			if isCapacityError(err) {
+				cfg.TurnPool.markUDPCapacityFailure(turn, err)
+				errMsgs = append(errMsgs, fmt.Sprintf("%s/udp: %v", turn.Addr, err))
+				// 508 indicates TURN relay capacity/quota exhaustion; retrying over TCP hits the same limit.
+				continue
+			}
 			cfg.TurnPool.markUDPFailure(turn, err)
-			errs = append(errs, fmt.Errorf("%s/udp: %w", turn.Addr, err))
+			errMsgs = append(errMsgs, fmt.Sprintf("%s/udp: %v", turn.Addr, err))
 			if cfg.LogVerbose {
 				log.Printf("UDP TURN-over-UDP candidate failed via %s: %v", turn.Addr, err)
 			}
+		} else if cfg.TurnPool.udpCapacityCooling(turn) {
+			capacityCooling = true
 		} else if cfg.LogVerbose {
 			log.Printf("skip TURN-over-UDP candidate via %s during cooldown", turn.Addr)
 		}
@@ -130,22 +159,51 @@ func newUDPSession(ctx *setupContext, cfg Config, clientTCP net.Conn, localUDP *
 		if err := ctx.err(); err != nil {
 			return nil, "", err
 		}
+		if !cfg.TurnPool.udpTCPAllowed(turn) {
+			if cfg.TurnPool.udpCapacityCooling(turn) {
+				capacityCooling = true
+			} else if cfg.LogVerbose {
+				log.Printf("skip TURN-over-TCP UDP candidate via %s during cooldown", turn.Addr)
+			}
+			continue
+		}
 		s, tcpErr := newUDPSessionWithNetwork(ctx, cfg, clientTCP, localUDP, turn, "tcp")
 		if tcpErr == nil {
+			cfg.TurnPool.markUDPTCPSuccess(turn)
 			return s, turn.Addr + "/tcp", nil
 		}
 		if ctxErr := ctx.err(); ctxErr != nil {
 			return nil, "", ctxErr
 		}
-		cfg.TurnPool.recordFailure(turn.Addr, "TURN UDP（TCP 传输）", tcpErr)
-		errs = append(errs, fmt.Errorf("%s/tcp: %w", turn.Addr, tcpErr))
-		if err != nil {
-			log.Printf("UDP TURN candidate failed via %s: %v", turn.Addr, errors.Join(err, tcpErr))
+		if isCapacityError(tcpErr) {
+			cfg.TurnPool.markUDPCapacityFailure(turn, tcpErr)
 		} else {
-			log.Printf("UDP TURN candidate failed via %s/tcp: %v", turn.Addr, tcpErr)
+			cfg.TurnPool.markUDPTCPFailure(turn, tcpErr)
 		}
+		errMsgs = append(errMsgs, fmt.Sprintf("%s/tcp: %v", turn.Addr, tcpErr))
 	}
-	return nil, "", errors.Join(errs...)
+	if len(errMsgs) == 0 {
+		if capacityCooling {
+			return nil, "", errUDPCapacityCooldown
+		}
+		// Non-capacity cooldown on every node: still try the primary candidate over TCP for fast recovery.
+		turn := candidates[0]
+		s, tcpErr := newUDPSessionWithNetwork(ctx, cfg, clientTCP, localUDP, turn, "tcp")
+		if tcpErr == nil {
+			cfg.TurnPool.markUDPTCPSuccess(turn)
+			return s, turn.Addr + "/tcp", nil
+		}
+		if ctxErr := ctx.err(); ctxErr != nil {
+			return nil, "", ctxErr
+		}
+		if isCapacityError(tcpErr) {
+			cfg.TurnPool.markUDPCapacityFailure(turn, tcpErr)
+		} else {
+			cfg.TurnPool.markUDPTCPFailure(turn, tcpErr)
+		}
+		return nil, "", fmt.Errorf("%s/tcp: %w", turn.Addr, tcpErr)
+	}
+	return nil, "", errors.New(strings.Join(errMsgs, "; "))
 }
 
 func newUDPSessionWithNetwork(ctx *setupContext, cfg Config, clientTCP net.Conn, localUDP *net.UDPConn, turn turnServerConfig, network string) (*udpSession, error) {
@@ -163,6 +221,7 @@ func newUDPSessionWithNetwork(ctx *setupContext, cfg Config, clientTCP net.Conn,
 	stop := context.AfterFunc(ctx, func() { _ = conn.close() })
 	defer stop()
 	username, password := turn.auth()
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 
 	s := &udpSession{
 		cfg:         cfg,
@@ -173,6 +232,9 @@ func newUDPSessionWithNetwork(ctx *setupContext, cfg Config, clientTCP net.Conn,
 		localUDP:    localUDP,
 		turnConn:    conn,
 		turnNetwork: network,
+		allocatedAt: time.Now(),
+		ctx:         sessionCtx,
+		cancel:      sessionCancel,
 		pending:     make(map[string]chan *stun.Message),
 		permissions: make(map[[4]byte]time.Time),
 		sendTxID:    uint64(time.Now().UnixNano()),
@@ -184,6 +246,7 @@ func newUDPSessionWithNetwork(ctx *setupContext, cfg Config, clientTCP net.Conn,
 	}
 	ctx.stage.Store("TURN UDP 认证与分配（" + turn.Addr + "/" + network + "）")
 	if err := s.allocate(ctx, allocateTimeout); err != nil {
+		sessionCancel()
 		_ = conn.close()
 		return nil, err
 	}
@@ -376,6 +439,9 @@ func (c *udpSTUNConn) close() error {
 
 func (s *udpSession) close() {
 	s.closeOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
 		close(s.closed)
 		if s.localUDP != nil {
 			_ = s.localUDP.Close()
@@ -385,6 +451,13 @@ func (s *udpSession) close() {
 			_ = s.turnConn.close()
 		}
 	})
+}
+
+func (s *udpSession) sessionContext() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
 }
 
 func (s *udpSession) releaseAllocation() {
@@ -539,6 +612,8 @@ func (s *udpSession) allocate(ctx context.Context, timeout time.Duration) error 
 
 	if res.Type.Class == stun.ClassSuccessResponse {
 		s.needAuth = false
+		s.lifetime = parseAllocationLifetime(res)
+		s.allocatedAt = time.Now()
 		return nil
 	}
 
@@ -548,7 +623,7 @@ func (s *udpSession) allocate(ctx context.Context, timeout time.Duration) error 
 
 	code, reason := getErrorCode(res)
 	if code != 401 {
-		return fmt.Errorf("UDP allocate error %d %s", code, reason)
+		return &turnErrorCodeError{op: "UDP allocate error", code: code, reason: reason}
 	}
 
 	if err := s.realm.GetFrom(res); err != nil {
@@ -576,6 +651,8 @@ func (s *udpSession) allocate(ctx context.Context, timeout time.Duration) error 
 			return err
 		}
 		if res2.Type.Class == stun.ClassSuccessResponse {
+			s.lifetime = parseAllocationLifetime(res2)
+			s.allocatedAt = time.Now()
 			return nil
 		}
 		stale, err := updateAuthFromError(res2, &s.realm, &s.nonce)
@@ -588,7 +665,7 @@ func (s *udpSession) allocate(ctx context.Context, timeout time.Duration) error 
 			}
 		}
 		c, r := getErrorCode(res2)
-		return fmt.Errorf("UDP allocate auth error %d %s", c, r)
+		return &turnErrorCodeError{op: "UDP allocate auth error", code: c, reason: r}
 	}
 	return errors.New("UDP allocate authentication retry exhausted")
 }
@@ -630,13 +707,28 @@ func (s *udpSession) initialRequest(ctx context.Context, req *stun.Message, time
 	}
 }
 
+func (s *udpSession) initialRefreshDelay(now time.Time) time.Duration {
+	interval := refreshIntervalForLifetime(s.lifetime)
+	if s.allocatedAt.IsZero() {
+		return interval
+	}
+	remaining := interval - now.Sub(s.allocatedAt)
+	if remaining < 0 {
+		return 0
+	}
+	if remaining > interval {
+		return interval
+	}
+	return remaining
+}
+
 func (s *udpSession) refreshLoop() {
-	ticker := time.NewTicker(allocationRefreshEvery)
-	defer ticker.Stop()
+	timer := time.NewTimer(s.initialRefreshDelay(time.Now()))
+	defer timer.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-timer.C:
 			s.pruneExpiredPermissions(time.Now())
 			if err := s.refreshAllocation(); err != nil {
 				select {
@@ -654,6 +746,7 @@ func (s *udpSession) refreshLoop() {
 					log.Printf("UDP allocation refresh recovered via %s after retry: %v", s.turn.Addr, err)
 				}
 			}
+			timer.Reset(refreshIntervalForLifetime(s.lifetime))
 		case <-s.closed:
 			return
 		}
@@ -685,6 +778,7 @@ func (s *udpSession) refreshAllocation() error {
 			return err
 		}
 		if res.Type.Class == stun.ClassSuccessResponse {
+			s.lifetime = parseAllocationLifetime(res)
 			return nil
 		}
 		stale, err := s.updateStaleNonce(res)
@@ -906,7 +1000,7 @@ func (s *udpSession) readLocalUDPLoop() {
 		}
 
 		if ip == nil {
-			ip, err = resolveDoH(context.Background(), host, s.cfg)
+			ip, err = resolveDoH(s.sessionContext(), host, s.cfg)
 			if err != nil {
 				if s.cfg.LogVerbose {
 					log.Printf("UDP resolve failed %s: %v", host, err)

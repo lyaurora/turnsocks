@@ -28,20 +28,23 @@ const (
 	AttrXORPeerAddress     stun.AttrType = 0x0012
 	AttrData               stun.AttrType = 0x0013
 
-	stunMagicCookie        uint32 = 0x2112A442
-	staleNonceCode                = 438
-	maxSTUNMessageLength          = 64 * 1024
-	allocationLifetime            = 10 * time.Minute
-	allocationRefreshEvery        = 5 * time.Minute
-	turnUDPAttemptTimeout         = time.Second
-	turnUDPRetryRTO               = 300 * time.Millisecond
-	turnTCPDialTimeout            = 3 * time.Second
-	tcpKeepAlivePeriod            = 30 * time.Second
-	udpSocketBufferSize           = 512 << 10
-	proxyCopyBufferSize           = 32 << 10
-	refreshRetryDelay             = time.Second
-	turnReleaseTimeout            = 500 * time.Millisecond
-	turnConfigPollInterval        = 2 * time.Second
+	stunMagicCookie           uint32 = 0x2112A442
+	staleNonceCode                   = 438
+	insufficientCapacityCode         = 508
+	maxSTUNMessageLength             = 64 * 1024
+	allocationLifetime               = 10 * time.Minute
+	allocationRefreshEvery           = 5 * time.Minute
+	minAllocationRefreshEvery        = 5 * time.Second
+	udpCapacityCooldown              = 5 * time.Second
+	turnUDPAttemptTimeout            = time.Second
+	turnUDPRetryRTO                  = 300 * time.Millisecond
+	turnTCPDialTimeout               = 3 * time.Second
+	tcpKeepAlivePeriod               = 30 * time.Second
+	udpSocketBufferSize              = 512 << 10
+	proxyCopyBufferSize              = 32 << 10
+	refreshRetryDelay                = time.Second
+	turnReleaseTimeout               = 500 * time.Millisecond
+	turnConfigPollInterval           = 2 * time.Second
 )
 
 var sendIndicationMessageType = stun.MessageType{Method: MethodSend, Class: stun.ClassIndication}.Value()
@@ -83,6 +86,61 @@ func turnPeerError(err error) error {
 func isTimeoutError(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+type turnErrorCodeError struct {
+	op     string
+	code   int
+	reason string
+}
+
+func (e *turnErrorCodeError) Error() string {
+	if e.reason == "" {
+		return fmt.Sprintf("%s %d", e.op, e.code)
+	}
+	return fmt.Sprintf("%s %d %s", e.op, e.code, e.reason)
+}
+
+func isCapacityError(err error) bool {
+	var codeErr *turnErrorCodeError
+	return errors.As(err, &codeErr) && codeErr.code == insufficientCapacityCode
+}
+
+func parseAllocationLifetime(m *stun.Message) time.Duration {
+	if m == nil {
+		return allocationLifetime
+	}
+	raw, err := m.Get(AttrLifetime)
+	if err != nil || len(raw) != 4 {
+		return allocationLifetime
+	}
+	seconds := binary.BigEndian.Uint32(raw)
+	if seconds == 0 {
+		return allocationLifetime
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func refreshIntervalForLifetime(lifetime time.Duration) time.Duration {
+	if lifetime <= 0 {
+		return allocationRefreshEvery
+	}
+	interval := lifetime / 2
+	if interval > allocationRefreshEvery {
+		return allocationRefreshEvery
+	}
+	if interval < minAllocationRefreshEvery {
+		return minAllocationRefreshEvery
+	}
+	return interval
+}
+
+func prewarmMaxAgeForLifetime(lifetime time.Duration) time.Duration {
+	maxAge := refreshIntervalForLifetime(lifetime) / 2
+	if maxAge < minAllocationRefreshEvery {
+		return minAllocationRefreshEvery
+	}
+	return maxAge
 }
 
 func addAuthToMessage(m *stun.Message, username, password string, realm *stun.Realm, nonce *stun.Nonce) error {

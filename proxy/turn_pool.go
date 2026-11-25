@@ -6,16 +6,19 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/lyaurora/turnsocks/turncfg"
 )
 
 type turnServerState struct {
-	Server         turnServerConfig
-	FailedUntil    time.Time
-	UDPFailedUntil time.Time
-	LastError      string
+	Server            turnServerConfig
+	FailedUntil       time.Time
+	UDPFailedUntil    time.Time
+	UDPTCPFailedUntil time.Time
+	UDPCapacityUntil  time.Time
+	LastError         string
 }
 
 type turnServerConfig struct {
@@ -35,6 +38,35 @@ type turnPool struct {
 	lastFailureWrite time.Time
 }
 
+type fileStamp struct {
+	modTime time.Time
+	size    int64
+	dev     uint64
+	ino     uint64
+	valid   bool
+}
+
+func statFileStamp(path string) (fileStamp, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}, err
+	}
+	stamp := fileStamp{
+		modTime: info.ModTime(),
+		size:    info.Size(),
+		valid:   true,
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		stamp.dev = uint64(st.Dev)
+		stamp.ino = uint64(st.Ino)
+	}
+	return stamp, nil
+}
+
+func (s fileStamp) equal(other fileStamp) bool {
+	return s.valid && other.valid && s.modTime.Equal(other.modTime) && s.size == other.size && s.dev == other.dev && s.ino == other.ino
+}
+
 // A TURN TCP allocation may carry multiple peers, but some servers reject
 // concurrent CONNECT requests to the same peer with 446 Connection Already Exists.
 func watchTurnConfig(cfg Config) {
@@ -42,31 +74,26 @@ func watchTurnConfig(cfg Config) {
 		return
 	}
 
-	info, err := os.Stat(cfg.ConfigPath)
-	if err != nil {
-		if cfg.LogVerbose && !os.IsNotExist(err) {
-			log.Printf("TURN config watch stat failed: %v", err)
-		}
-		return
+	lastStamp, err := statFileStamp(cfg.ConfigPath)
+	if err != nil && cfg.LogVerbose && !os.IsNotExist(err) {
+		log.Printf("TURN config watch stat failed: %v", err)
 	}
-	lastMod := info.ModTime()
 
 	ticker := time.NewTicker(turnConfigPollInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		info, err := os.Stat(cfg.ConfigPath)
+		stamp, err := statFileStamp(cfg.ConfigPath)
 		if err != nil {
-			if cfg.LogVerbose {
+			if cfg.LogVerbose && !os.IsNotExist(err) {
 				log.Printf("TURN config watch stat failed: %v", err)
 			}
 			continue
 		}
-		modTime := info.ModTime()
-		if modTime.Equal(lastMod) {
+		if stamp.equal(lastStamp) {
 			continue
 		}
-		lastMod = modTime
+		lastStamp = stamp
 
 		raw, err := readEnvFileValue(cfg.ConfigPath, "TURN_SERVERS")
 		if err != nil {
@@ -324,9 +351,24 @@ func (p *turnPool) markUDPSuccess(server turnServerConfig) {
 	for i := range p.servers {
 		if p.servers[i].Server.String() == server.String() {
 			p.servers[i].UDPFailedUntil = time.Time{}
+			p.servers[i].UDPTCPFailedUntil = time.Time{}
+			p.servers[i].UDPCapacityUntil = time.Time{}
 			if strings.HasPrefix(p.servers[i].LastError, "udp: ") {
 				p.servers[i].LastError = ""
 			}
+			return
+		}
+	}
+}
+
+func (p *turnPool) markUDPTCPSuccess(server turnServerConfig) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for i := range p.servers {
+		if p.servers[i].Server.String() == server.String() {
+			p.servers[i].UDPTCPFailedUntil = time.Time{}
+			p.servers[i].UDPCapacityUntil = time.Time{}
 			return
 		}
 	}
@@ -343,6 +385,45 @@ func (p *turnPool) udpAllowed(server turnServerConfig) bool {
 		}
 	}
 	return true
+}
+
+func (p *turnPool) udpTCPAllowed(server turnServerConfig) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	for i := range p.servers {
+		if p.servers[i].Server.String() == server.String() {
+			return !now.Before(p.servers[i].UDPTCPFailedUntil)
+		}
+	}
+	return true
+}
+
+func (p *turnPool) udpPrewarmAllowed(server turnServerConfig) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	for i := range p.servers {
+		if p.servers[i].Server.String() == server.String() {
+			return !now.Before(p.servers[i].UDPFailedUntil) && !now.Before(p.servers[i].UDPCapacityUntil)
+		}
+	}
+	return true
+}
+
+func (p *turnPool) udpCapacityCooling(server turnServerConfig) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	for i := range p.servers {
+		if p.servers[i].Server.String() == server.String() {
+			return now.Before(p.servers[i].UDPCapacityUntil)
+		}
+	}
+	return false
 }
 
 func (p *turnPool) contains(server turnServerConfig) bool {
@@ -367,6 +448,37 @@ func (p *turnPool) markUDPFailure(server turnServerConfig, err error) {
 			p.servers[i].UDPFailedUntil = time.Now().Add(p.cooldown)
 			p.servers[i].LastError = "udp: " + p.cleanError(err)
 			p.recordFailureLocked(server.Addr, "TURN UDP", err)
+			return
+		}
+	}
+}
+
+func (p *turnPool) markUDPCapacityFailure(server turnServerConfig, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	retryCooldown := shorterTimeout(p.cooldown, udpCapacityCooldown)
+	for i := range p.servers {
+		if p.servers[i].Server.String() == server.String() {
+			p.servers[i].UDPFailedUntil = now.Add(retryCooldown)
+			p.servers[i].UDPTCPFailedUntil = now.Add(retryCooldown)
+			p.servers[i].UDPCapacityUntil = now.Add(p.cooldown)
+			p.servers[i].LastError = "udp: " + p.cleanError(err)
+			p.recordFailureLocked(server.Addr, "TURN UDP", err)
+			return
+		}
+	}
+}
+
+func (p *turnPool) markUDPTCPFailure(server turnServerConfig, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for i := range p.servers {
+		if p.servers[i].Server.String() == server.String() {
+			p.servers[i].UDPTCPFailedUntil = time.Now().Add(p.cooldown)
+			p.recordFailureLocked(server.Addr, "TURN UDP（TCP 传输）", err)
 			return
 		}
 	}

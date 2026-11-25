@@ -152,11 +152,24 @@ func readSocksAddr(conn net.Conn, atyp byte) (string, int, error) {
 }
 
 func writeSocksReply(conn net.Conn, rep byte, bindHost string, bindPort int) error {
-	ip := net.ParseIP(bindHost).To4()
-	if ip == nil {
-		ip = net.IPv4(0, 0, 0, 0)
+	if ip := net.ParseIP(bindHost); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			b := []byte{0x05, rep, 0x00, 0x01, ip4[0], ip4[1], ip4[2], ip4[3], 0, 0}
+			binary.BigEndian.PutUint16(b[8:10], uint16(bindPort))
+			return writeAll(conn, b)
+		}
+		if ip16 := ip.To16(); ip16 != nil {
+			b := make([]byte, 22)
+			b[0] = 0x05
+			b[1] = rep
+			b[2] = 0x00
+			b[3] = 0x04
+			copy(b[4:20], ip16)
+			binary.BigEndian.PutUint16(b[20:22], uint16(bindPort))
+			return writeAll(conn, b)
+		}
 	}
-	b := []byte{0x05, rep, 0x00, 0x01, ip[0], ip[1], ip[2], ip[3], 0, 0}
+	b := []byte{0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0}
 	binary.BigEndian.PutUint16(b[8:10], uint16(bindPort))
 	return writeAll(conn, b)
 }
@@ -176,6 +189,13 @@ func writeAll(conn net.Conn, b []byte) error {
 }
 
 func handleTCPConnect(ctx *setupContext, client net.Conn, cfg Config, req socksRequest) {
+	if ip := net.ParseIP(req.Host); ip != nil && ip.To4() == nil {
+		if cfg.LogVerbose {
+			log.Printf("reject unsupported IPv6 target %s:%d", req.Host, req.Port)
+		}
+		_ = writeSocksReply(client, 0x08, "0.0.0.0", 0)
+		return
+	}
 	ctx.stage.Store("DNS 解析")
 	ip, err := resolveDoH(ctx, req.Host, cfg)
 	if err != nil {

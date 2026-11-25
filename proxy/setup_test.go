@@ -409,3 +409,43 @@ func TestSetupDeadlineCoversAuthenticationRetries(t *testing.T) {
 		})
 	}
 }
+
+func TestSOCKSRejectsIPv6LiteralWithoutDiagnosticPollution(t *testing.T) {
+	turn := serveSetupTURN(t, nil)
+	cfg := setupTestConfig(t, turn)
+	client, server := net.Pipe()
+	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleSocksConn(server, cfg)
+	}()
+	defer func() {
+		_ = client.Close()
+		<-done
+	}()
+
+	if err := writeAll(client, []byte{5, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	var method [2]byte
+	if _, err := io.ReadFull(client, method[:]); err != nil {
+		t.Fatal(err)
+	}
+	ip6 := net.ParseIP("2606:4700:4700::1111").To16()
+	req := append([]byte{5, 1, 0, 4}, ip6...)
+	req = append(req, 0x01, 0xbb)
+	if err := writeAll(client, req); err != nil {
+		t.Fatal(err)
+	}
+	var reply [10]byte
+	if _, err := io.ReadFull(client, reply[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply[1] != 0x08 {
+		t.Fatalf("SOCKS IPv6 reply = 0x%02x, want 0x08", reply[1])
+	}
+	if failure := readRuntimeState(cfg.TurnPool.statePath).LastFailure; failure != nil {
+		t.Fatalf("IPv6 literal polluted last_failure: %+v", failure)
+	}
+}

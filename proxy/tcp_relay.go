@@ -25,6 +25,7 @@ type tcpAllocation struct {
 	realm       stun.Realm
 	nonce       stun.Nonce
 	needAuth    bool
+	lifetime    time.Duration
 	stop        chan struct{}
 	ctrlMu      sync.Mutex
 	closed      atomic.Bool
@@ -38,7 +39,7 @@ type tcpAllocation struct {
 	closeData   bool
 }
 
-func allocateTCP(ctx *setupContext, conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, stun.Nonce, bool, error) {
+func allocateTCP(ctx *setupContext, conn net.Conn, cfg Config, turn turnServerConfig) (stun.Realm, stun.Nonce, bool, time.Duration, error) {
 	req := stun.New()
 	req.Type = stun.MessageType{Method: MethodAllocate, Class: stun.ClassRequest}
 	req.TransactionID = stun.NewTransactionID()
@@ -46,29 +47,29 @@ func allocateTCP(ctx *setupContext, conn net.Conn, cfg Config, turn turnServerCo
 
 	res, err := doSTUN(ctx, conn, req, cfg.Timeout)
 	if err != nil {
-		return stun.Realm{}, stun.Nonce{}, false, err
+		return stun.Realm{}, stun.Nonce{}, false, 0, err
 	}
 
 	if res.Type.Class == stun.ClassSuccessResponse {
-		return stun.Realm{}, stun.Nonce{}, false, nil
+		return stun.Realm{}, stun.Nonce{}, false, parseAllocationLifetime(res), nil
 	}
 
 	if res.Type.Class != stun.ClassErrorResponse {
-		return stun.Realm{}, stun.Nonce{}, false, fmt.Errorf("unexpected allocate response: %v", res.Type)
+		return stun.Realm{}, stun.Nonce{}, false, 0, fmt.Errorf("unexpected allocate response: %v", res.Type)
 	}
 
 	code, reason := getErrorCode(res)
 	if code != 401 {
-		return stun.Realm{}, stun.Nonce{}, false, fmt.Errorf("allocate error %d %s", code, reason)
+		return stun.Realm{}, stun.Nonce{}, false, 0, &turnErrorCodeError{op: "allocate error", code: code, reason: reason}
 	}
 
 	var realm stun.Realm
 	var nonce stun.Nonce
 	if err := realm.GetFrom(res); err != nil {
-		return stun.Realm{}, stun.Nonce{}, true, fmt.Errorf("allocate auth missing realm: %w", err)
+		return stun.Realm{}, stun.Nonce{}, true, 0, fmt.Errorf("allocate auth missing realm: %w", err)
 	}
 	if err := nonce.GetFrom(res); err != nil {
-		return stun.Realm{}, stun.Nonce{}, true, fmt.Errorf("allocate auth missing nonce: %w", err)
+		return stun.Realm{}, stun.Nonce{}, true, 0, fmt.Errorf("allocate auth missing nonce: %w", err)
 	}
 
 	username, password := turn.auth()
@@ -78,33 +79,33 @@ func allocateTCP(ctx *setupContext, conn net.Conn, cfg Config, turn turnServerCo
 		req2.TransactionID = stun.NewTransactionID()
 		req2.Add(AttrRequestedTransport, []byte{0x06, 0x00, 0x00, 0x00})
 		if err := addAuthToMessage(req2, username, password, &realm, &nonce); err != nil {
-			return realm, nonce, true, err
+			return realm, nonce, true, 0, err
 		}
 
 		res2, err := doSTUN(ctx, conn, req2, cfg.Timeout)
 		if err != nil {
-			return realm, nonce, true, err
+			return realm, nonce, true, 0, err
 		}
 		if err := validateLongTermIntegrity(res2, username, password, &realm); err != nil {
-			return realm, nonce, true, err
+			return realm, nonce, true, 0, err
 		}
 		if res2.Type.Class == stun.ClassSuccessResponse {
-			return realm, nonce, true, nil
+			return realm, nonce, true, parseAllocationLifetime(res2), nil
 		}
 		stale, err := updateAuthFromError(res2, &realm, &nonce)
 		if stale {
 			if err != nil {
-				return realm, nonce, true, err
+				return realm, nonce, true, 0, err
 			}
 			if attempt == 0 {
 				continue
 			}
 		}
 		c, r := getErrorCode(res2)
-		return realm, nonce, true, fmt.Errorf("allocate auth error %d %s", c, r)
+		return realm, nonce, true, 0, &turnErrorCodeError{op: "allocate auth error", code: c, reason: r}
 	}
 
-	return realm, nonce, true, errors.New("allocate authentication retry exhausted")
+	return realm, nonce, true, 0, errors.New("allocate authentication retry exhausted")
 }
 
 func dialTurnTCP(ctx *setupContext, cfg Config, targetIP net.IP, targetPort int) (net.Conn, func(), string, error) {
@@ -191,7 +192,7 @@ func dialTurnTCPWithServer(ctx *setupContext, cfg Config, turn turnServerConfig,
 		if err != nil {
 			return nil, nil, err
 		}
-		dataConn, err := allocation.connect(ctx, targetIP, targetPort)
+		dataConn, dataPhase, err := allocation.connect(ctx, targetIP, targetPort)
 		if err == nil && !allocation.trackDataConn(dataConn) {
 			err = net.ErrClosed
 		}
@@ -203,12 +204,10 @@ func dialTurnTCPWithServer(ctx *setupContext, cfg Config, turn turnServerConfig,
 			}, nil
 		}
 		// Remove the failed allocation before allowing another peer to reserve it.
-		if ctx.err() != nil {
+		if ctx.err() != nil || isTimeoutError(err) || (dataPhase && allocation.hasTrackedDataConns()) {
 			cfg.TCPAllocs.retire(turn, allocation)
 		} else if isTurnServerFailure(err) {
 			cfg.TCPAllocs.invalidate(turn, allocation)
-		} else if isTimeoutError(err) {
-			cfg.TCPAllocs.retire(turn, allocation)
 		}
 		allocation.finishConnect()
 		cfg.TCPAllocs.release(turn, allocation, peer)
@@ -240,7 +239,7 @@ func newTCPAllocation(ctx *setupContext, cfg Config, turn turnServerConfig) (*tc
 	}
 
 	ctx.stage.Store("TURN 认证与分配（" + turn.Addr + "）")
-	realm, nonce, needAuth, err := allocateTCP(ctx, ctrlConn, cfg, turn)
+	realm, nonce, needAuth, lifetime, err := allocateTCP(ctx, ctrlConn, cfg, turn)
 	if err != nil {
 		ctrlConn.Close()
 		return nil, err
@@ -256,6 +255,7 @@ func newTCPAllocation(ctx *setupContext, cfg Config, turn turnServerConfig) (*tc
 		realm:       realm,
 		nonce:       nonce,
 		needAuth:    needAuth,
+		lifetime:    lifetime,
 		stop:        make(chan struct{}),
 		activePeers: make(map[string]struct{}),
 		dataConns:   make(map[net.Conn]struct{}),
@@ -264,22 +264,22 @@ func newTCPAllocation(ctx *setupContext, cfg Config, turn turnServerConfig) (*tc
 	return a, nil
 }
 
-func (a *tcpAllocation) connect(ctx *setupContext, targetIP net.IP, targetPort int) (net.Conn, error) {
+func (a *tcpAllocation) connect(ctx *setupContext, targetIP net.IP, targetPort int) (net.Conn, bool, error) {
 	ctx.stage.Store("等待 TURN 控制连接（" + a.turn.Addr + "）")
 	a.ctrlMu.Lock()
 	connID, err := a.connectPeerLocked(ctx, targetIP, targetPort)
 	a.ctrlMu.Unlock()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if err := ctx.err(); err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	ctx.stage.Store("TURN 数据通道拨号（" + a.turn.Addr + "）")
 	dataConn, err := dialTCPKeepAlive(ctx, a.serverAddr, shorterTimeout(a.cfg.Timeout, turnTCPDialTimeout))
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	stop := context.AfterFunc(ctx, func() { _ = dataConn.Close() })
 	defer stop()
@@ -287,15 +287,15 @@ func (a *tcpAllocation) connect(ctx *setupContext, targetIP net.IP, targetPort i
 	ctx.stage.Store("TURN 数据通道绑定（" + a.turn.Addr + "）")
 	if err := a.bindDataConn(ctx, dataConn, connID); err != nil {
 		dataConn.Close()
-		return nil, err
+		return nil, true, err
 	}
 	stop()
 	if err := ctx.err(); err != nil {
 		_ = dataConn.Close()
-		return nil, err
+		return nil, true, err
 	}
 
-	return dataConn, nil
+	return dataConn, true, nil
 }
 
 func connectedTurnAddr(conn net.Conn, fallback string) string {
@@ -522,6 +522,12 @@ func (a *tcpAllocation) untrackDataConn(conn net.Conn) {
 	a.dataMu.Unlock()
 }
 
+func (a *tcpAllocation) hasTrackedDataConns() bool {
+	a.dataMu.Lock()
+	defer a.dataMu.Unlock()
+	return len(a.dataConns) > 0
+}
+
 func (a *tcpAllocation) closeTrackedDataConns() {
 	var conns []net.Conn
 	a.dataMu.Lock()
@@ -546,12 +552,15 @@ func (a *tcpAllocation) close() {
 }
 
 func (a *tcpAllocation) refreshLoop() {
-	ticker := time.NewTicker(allocationRefreshEvery)
-	defer ticker.Stop()
+	a.ctrlMu.Lock()
+	interval := refreshIntervalForLifetime(a.lifetime)
+	a.ctrlMu.Unlock()
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-timer.C:
 			if err := a.refresh(); err != nil {
 				select {
 				case <-time.After(refreshRetryDelay):
@@ -559,8 +568,12 @@ func (a *tcpAllocation) refreshLoop() {
 					return
 				}
 				if retryErr := a.refresh(); retryErr != nil {
-					a.cfg.TurnPool.markFailure(a.turn, fmt.Errorf("会话续期失败：%w", retryErr))
-					log.Printf("TCP allocation refresh failed via %s after retry: %v", a.turn.Addr, errors.Join(err, retryErr))
+					if a.hasActivePeers() || a.hasTrackedDataConns() {
+						a.cfg.TurnPool.markFailure(a.turn, fmt.Errorf("会话续期失败：%w", retryErr))
+						log.Printf("TCP allocation refresh failed via %s after retry: %v", a.turn.Addr, errors.Join(err, retryErr))
+					} else if a.cfg.LogVerbose {
+						log.Printf("idle TCP allocation refresh failed via %s after retry: %v", a.turn.Addr, errors.Join(err, retryErr))
+					}
 					a.close()
 					a.closeTrackedDataConns()
 					return
@@ -569,6 +582,10 @@ func (a *tcpAllocation) refreshLoop() {
 					log.Printf("TCP allocation refresh recovered via %s after retry: %v", a.turn.Addr, err)
 				}
 			}
+			a.ctrlMu.Lock()
+			nextInterval := refreshIntervalForLifetime(a.lifetime)
+			a.ctrlMu.Unlock()
+			timer.Reset(nextInterval)
 		case <-a.stop:
 			return
 		}
@@ -581,10 +598,14 @@ func (a *tcpAllocation) refresh() error {
 	if a.closed.Load() {
 		return errors.New("TCP allocation is closed")
 	}
-	return refreshAllocation(a.ctrlConn, a.cfg, a.username, a.password, &a.realm, &a.nonce, a.needAuth)
+	lifetime, err := refreshAllocation(a.ctrlConn, a.cfg, a.username, a.password, &a.realm, &a.nonce, a.needAuth)
+	if err == nil && lifetime > 0 {
+		a.lifetime = lifetime
+	}
+	return err
 }
 
-func refreshAllocation(conn net.Conn, cfg Config, username string, password string, realm *stun.Realm, nonce *stun.Nonce, needAuth bool) error {
+func refreshAllocation(conn net.Conn, cfg Config, username string, password string, realm *stun.Realm, nonce *stun.Nonce, needAuth bool) (time.Duration, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		req := stun.New()
 		req.Type = stun.MessageType{Method: MethodRefresh, Class: stun.ClassRequest}
@@ -592,33 +613,33 @@ func refreshAllocation(conn net.Conn, cfg Config, username string, password stri
 		addLifetime(req, allocationLifetime)
 		if needAuth {
 			if err := addAuthToMessage(req, username, password, realm, nonce); err != nil {
-				return err
+				return 0, err
 			}
 		}
 
 		res, err := doSTUN(context.Background(), conn, req, cfg.Timeout)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if needAuth {
 			if err := validateLongTermIntegrity(res, username, password, realm); err != nil {
-				return err
+				return 0, err
 			}
 		}
 		if res.Type.Class == stun.ClassSuccessResponse {
-			return nil
+			return parseAllocationLifetime(res), nil
 		}
 		stale, err := updateAuthFromError(res, realm, nonce)
 		if stale {
 			if err != nil {
-				return err
+				return 0, err
 			}
 			if attempt == 0 {
 				continue
 			}
 		}
 		code, reason := getErrorCode(res)
-		return fmt.Errorf("refresh error %d %s", code, reason)
+		return 0, fmt.Errorf("refresh error %d %s", code, reason)
 	}
-	return fmt.Errorf("refresh error %d Stale Nonce", staleNonceCode)
+	return 0, fmt.Errorf("refresh error %d Stale Nonce", staleNonceCode)
 }

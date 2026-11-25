@@ -83,3 +83,37 @@ func TestDialTurnTCPRecoversStaleAllocation(t *testing.T) {
 		})
 	}
 }
+
+func TestTCPDataPhaseFailurePreservesSharedAllocation(t *testing.T) {
+	var binds atomic.Int32
+	turn := serveSetupTURN(t, func(_ net.Conn, req, res *stun.Message) bool {
+		if req.Type.Method == MethodConnectionBind && binds.Add(1) == 2 {
+			res.Type.Class = stun.ClassErrorResponse
+			_ = (stun.ErrorCodeAttribute{Code: 500, Reason: []byte("bind failure")}).AddTo(res)
+		}
+		return false
+	})
+	cfg := setupTestConfig(t, turn)
+	first, release, _, err := dialTurnTCP(&setupContext{Context: context.Background()}, cfg, net.IPv4(192, 0, 2, 1), 443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	defer first.Close()
+
+	a := cfg.TCPAllocs.allocs[turn.String()][0]
+	if _, _, _, err := dialTurnTCP(&setupContext{Context: context.Background()}, cfg, net.IPv4(192, 0, 2, 2), 443); err == nil {
+		t.Fatal("expected second bind failure")
+	}
+	if a.isClosed() || !a.retired.Load() {
+		t.Fatalf("shared allocation closed=%v retired=%v; want closed=false retired=true", a.isClosed(), a.retired.Load())
+	}
+	_ = first.SetDeadline(time.Now().Add(time.Second))
+	if err := writeAll(first, []byte("keep")); err != nil {
+		t.Fatal(err)
+	}
+	var buf [4]byte
+	if _, err := io.ReadFull(first, buf[:]); err != nil || string(buf[:]) != "keep" {
+		t.Fatalf("shared peer stopped relaying after sibling data-phase error: %q, %v", buf, err)
+	}
+}
