@@ -39,6 +39,7 @@ function App() {
   const [testing, setTesting] = useState<ActiveProbe | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [toast, setToast] = useState<{ message: string; tone: "info" | "danger" }>({ message: "", tone: "info" });
   const [deleteTarget, setDeleteTarget] = useState("");
   const settingsDirty = useRef(false);
@@ -71,6 +72,7 @@ function App() {
     const next = await getState();
     if (version !== refreshVersion.current) return next;
     setState(next);
+    setLoadError("");
     setLoaded(true);
     if (!settingsDirty.current) {
       setConfig({
@@ -84,17 +86,34 @@ function App() {
     return next;
   }, []);
 
-  useEffect(() => {
-    refresh().catch((err) => showToast(errorMessage(err), "danger"));
+  const loadInitial = useCallback(() => {
+    setLoadError("");
+    return refresh().catch((err) => {
+      const msg = errorMessage(err);
+      setLoadError(msg);
+      showToast(msg, "danger");
+    });
   }, [refresh, showToast]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (!busyRef.current && !testController.current) {
+    void loadInitial();
+  }, [loadInitial]);
+
+  useEffect(() => {
+    const poll = () => {
+      if (!document.hidden && !busyRef.current && !testController.current) {
         refresh().catch(() => {});
       }
-    }, 5000);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(poll, 5000);
+    const onVisibilityChange = () => {
+      if (!document.hidden) poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [refresh]);
 
   useEffect(() => {
@@ -161,9 +180,9 @@ function App() {
     testController.current = controller;
     refreshVersion.current++;
     try {
-      for (const server of servers) {
+      for (const [idx, server] of servers.entries()) {
         controller.signal.throwIfAborted();
-        setTesting({ server, mode });
+        setTesting({ server, mode, index: idx + 1, total: servers.length });
         const result = await testServerRequest(server, mode, controller.signal);
         setState((prev) => ({
           ...prev,
@@ -248,12 +267,14 @@ function App() {
               <IconRefresh className="h-3.5 w-3.5" />
               重启代理
             </button>
-            <form action="/logout" method="post">
-              <button className={secondaryTopButtonClass} type="submit">
-                <IconLogout className="h-3.5 w-3.5" />
-                退出登录
-              </button>
-            </form>
+            {state.panelAuthEnabled && (
+              <form action="/logout" method="post">
+                <button className={secondaryTopButtonClass} type="submit">
+                  <IconLogout className="h-3.5 w-3.5" />
+                  退出登录
+                </button>
+              </form>
+            )}
             <div className="flex gap-0.5 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-[3px] shadow-xs">
               {(["light", "system", "dark"] as ThemeMode[]).map((mode) => {
                 const Icon = mode === "light" ? IconSun : mode === "system" ? IconMonitor : IconMoon;
@@ -288,11 +309,25 @@ function App() {
       </div>
 
       {!loaded && (
-        <div className="fixed inset-0 z-40 grid place-items-center bg-[hsl(var(--background))]">
-          <div className="flex items-center gap-2.5 text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-[hsl(var(--border))] border-t-[hsl(var(--primary))] motion-reduce:animate-none" />
-            正在加载面板
-          </div>
+        <div className="fixed inset-0 z-40 grid place-items-center bg-[hsl(var(--background))] p-6">
+          {loadError ? (
+            <div className="shell-window flex w-[min(360px,100%)] flex-col items-center gap-3 p-6 text-center">
+              <div className="grid h-10 w-10 place-items-center rounded-[10px] bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]">
+                <IconAlert className="h-5 w-5" />
+              </div>
+              <div className="text-[14px] font-semibold text-[hsl(var(--foreground))]">面板加载失败</div>
+              <div className="break-all text-[12.5px] leading-5 text-[hsl(var(--muted-foreground))]">{loadError}</div>
+              <button className={`${topButtonClass} mt-1`} onClick={() => void loadInitial()} type="button">
+                <IconRefresh className="h-3.5 w-3.5" />
+                重试
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2.5 text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-[hsl(var(--border))] border-t-[hsl(var(--primary))] motion-reduce:animate-none" />
+              正在加载面板
+            </div>
+          )}
         </div>
       )}
 

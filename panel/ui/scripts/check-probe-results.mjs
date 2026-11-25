@@ -115,6 +115,9 @@ try {
   assert.ok(stop, "a running batch must expose its stop control");
   assert.doesNotMatch(stop[1], /\sdisabled=/);
 
+  const batch = render(partial, check, { server: "turn.example:3478", mode: "check", index: 2, total: 5 });
+  assert.match(batch, />停止检测 \(2\/5\)</);
+
   const { SettingsPanel } = await vite.ssrLoadModule("/src/features/settings/SettingsPanel.tsx");
   const events = renderToStaticMarkup(createElement(SettingsPanel, {
     state: { servers: [], service: {}, runtime: {
@@ -128,6 +131,7 @@ try {
   assert.match(events, /&lt;private error&gt;/);
   assert.match(events, /自动切换/);
   assert.match(events, /历史记录/);
+  assert.equal((events.match(/disabled=""/g) || []).length, 2, "auth inputs must be disabled when login is off");
 
   console.log("Probe API, cancellation, result display, and runtime event checks passed");
 } finally {

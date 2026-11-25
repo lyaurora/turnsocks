@@ -93,11 +93,11 @@ export function SettingsPanel({ state, config, busy, onSubmit, onFieldChange }: 
           </label>
           <label className={labelClass}>
             <span className={labelTextClass}>用户名</span>
-            <input type="text" autoComplete="off" value={config.panelUsername} onChange={(event) => onFieldChange("panelUsername", event.target.value)} className={inputClass} />
+            <input type="text" autoComplete="off" disabled={busy || !config.panelAuthEnabled} value={config.panelUsername} onChange={(event) => onFieldChange("panelUsername", event.target.value)} className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-55`} />
           </label>
           <label className={labelClass}>
             <span className={labelTextClass}>密码</span>
-            <input type="password" autoComplete="new-password" placeholder="留空不修改" value={config.panelPassword} onChange={(event) => onFieldChange("panelPassword", event.target.value)} className={inputClass} />
+            <input type="password" autoComplete="new-password" disabled={busy || !config.panelAuthEnabled} placeholder="留空不修改" value={config.panelPassword} onChange={(event) => onFieldChange("panelPassword", event.target.value)} className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-55`} />
           </label>
           <button className={`${primaryButtonClass} mt-1 min-h-[38px] w-full`} disabled={busy} type="submit">保存配置</button>
         </form>

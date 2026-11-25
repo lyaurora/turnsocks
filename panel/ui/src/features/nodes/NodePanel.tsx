@@ -154,7 +154,11 @@ export function NodePanel({ state, serverInput, testing, locked, onServerInput, 
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--border))] px-4 py-3.5 md:px-[18px]">
           <h2 className="text-[14.5px] font-semibold text-[hsl(var(--foreground))]">节点管理</h2>
           <div className="flex flex-wrap gap-2">
-            {testing && <button className={smallButtonClass} onClick={onStopTesting} type="button">停止检测</button>}
+            {testing && (
+              <button className={smallButtonClass} onClick={onStopTesting} type="button">
+                {testing.total && testing.total > 1 && testing.index ? `停止检测 (${testing.index}/${testing.total})` : "停止检测"}
+              </button>
+            )}
             <button className={`${smallButtonClass} ui-tooltip`} disabled={locked || !state.servers.length} onClick={() => onTestAll("check")} aria-label="检查全部" data-tooltip="检查延迟与连通性" type="button">检查全部</button>
             <button className={`${smallButtonClass} ui-tooltip`} disabled={locked || !state.servers.length} onClick={() => onTestAll("speed")} aria-label="测速全部" data-tooltip="约 112 MiB / 节点" type="button">
               <IconZap className="h-3.5 w-3.5" />

@@ -45,7 +45,7 @@ export type ServerTest = {
 };
 
 export type ProbeMode = "check" | "speed";
-export type ActiveProbe = { server: string; mode: ProbeMode };
+export type ActiveProbe = { server: string; mode: ProbeMode; index?: number; total?: number };
 
 export type ServerInfo = {
   raw: string;
