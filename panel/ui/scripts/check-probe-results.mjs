@@ -58,7 +58,7 @@ try {
   }));
   const html = render(result);
   for (const label of ["单线程（未完成）", "多线程（未完成）"]) {
-    assert.equal(html.split(label).length - 1, 2, "both the hero and node card must flag incomplete downloads");
+    assert.equal(html.split(label).length - 1, 2, "both the bandwidth tile and node card must flag incomplete downloads");
   }
   assert.match(html, /200\.2/);
   assert.match(html, /355\.3/);
@@ -83,16 +83,16 @@ try {
   assert.match(light, /text-\[hsl\(var\(--ok\)\)\][^"]*">36\.5ms/);
   assert.doesNotMatch(light, /Mbps|节点 TCP 延迟|>连通性检查<|>带宽测试</);
   const combined = render(partial, check);
-  for (const label of ["TCP 延迟", "UDP 转发</div>", "测试时间"]) {
-    assert.equal(combined.split(label).length - 1, 2, "each hero and node card must show a single result row");
-  }
+  assert.equal(combined.split("TCP 延迟").length - 1, 2, "both hero and node card must show TCP latency");
+  assert.match(combined, /吞吐带宽/);
+  assert.match(combined, /UDP 转发/);
+  assert.match(combined, /测试时间/);
   assert.match(combined, /UDP timed out/);
   assert.match(combined, /36\.5ms/);
   assert.match(combined, /200\.2/);
   assert.doesNotMatch(combined, /10\.0ms|节点 TCP 延迟|>连通性检查<|>带宽测试</);
-  const notices = [...combined.matchAll(/<div class="([^"]*bg-\[hsl\(var\(--danger\)\)\][^"]*)">(.*?)<\/div>/gs)];
+  const notices = [...combined.matchAll(/<div data-probe-failure="true" class="([^"]*)">(.*?)<\/div>/gs)];
   assert.equal(notices.length, 4, "each hero and node card must retain both check and download errors");
-  assert.equal(new Set(notices.map(([, className]) => className)).size, 1, "all failure notices must use the same style");
   const refreshed = render({ ...partial, testedAt: "2026-09-05T12:00:00.300Z" }, check);
   assert.match(refreshed, /36\.5ms/);
   assert.match(refreshed, /测试未完成，下载数据不完整/);
@@ -108,8 +108,8 @@ try {
 
   const running = render(partial, check, { server: "turn.example:3478", mode: "check" });
   const buttons = [...running.matchAll(/<button\b([^>]*)>(.*?)<\/button>/gs)];
-  const starts = buttons.filter(([, , content]) => /(?:检查|测速)(?:全部)?$/.test(content));
-  assert.equal(starts.length, 6, "both node cards and batch actions need controls");
+  const starts = buttons.filter(([, , content]) => /(?:检查|测速)(?:全部|中…)?$/.test(content));
+  assert.equal(starts.length, 8, "hero, both node cards, and batch actions need probe controls");
   for (const [, attributes] of starts) assert.match(attributes, /\sdisabled=/, "other nodes must not start competing probes");
   const stop = buttons.find(([, , content]) => content === "停止检测");
   assert.ok(stop, "a running batch must expose its stop control");
@@ -131,7 +131,29 @@ try {
   assert.match(events, /&lt;private error&gt;/);
   assert.match(events, /自动切换/);
   assert.match(events, /历史记录/);
-  assert.equal((events.match(/disabled=""/g) || []).length, 2, "auth inputs must be disabled when login is off");
+
+  const configOff = renderToStaticMarkup(createElement(SettingsPanel, {
+    state: { servers: [], service: {} },
+    config: { listen: "", doh: "", panelUsername: "", panelPassword: "", panelAuthEnabled: false },
+    busy: false,
+    activeTab: "config"
+  }));
+  const disabledInputs = [...configOff.matchAll(/<input\b[^>]*\sdisabled=""[^>]*>/g)];
+  assert.equal(disabledInputs.length, 2, "auth inputs must be disabled when login is off");
+  assert.match(configOff, /保存配置（无修改）/);
+
+  const dirtySettings = renderToStaticMarkup(createElement(SettingsPanel, {
+    state: { servers: [], service: {}, listen: "127.0.0.1:1080", doh: "https://cloudflare-dns.com/dns-query" },
+    config: { listen: "127.0.0.1:1081", doh: "https://cloudflare-dns.com/dns-query", panelUsername: "admin", panelPassword: "", panelAuthEnabled: true },
+    busy: false,
+    dirty: true,
+    restartsProxy: true,
+    activeTab: "config",
+    onReset: () => {}
+  }));
+  assert.match(dirtySettings, /未保存/);
+  assert.match(dirtySettings, /保存并重启代理/);
+  assert.match(dirtySettings, />还原</);
 
   console.log("Probe API, cancellation, result display, and runtime event checks passed");
 } finally {

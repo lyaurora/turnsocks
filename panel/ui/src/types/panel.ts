@@ -86,3 +86,4 @@ export type ConfigForm = {
 };
 
 export type ThemeMode = "light" | "system" | "dark";
+export type BusyAction = "restart" | "add" | "select" | "delete" | "note" | "config" | null;

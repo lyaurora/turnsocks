@@ -48,10 +48,52 @@ export function IconZap({ className = "h-4 w-4" }: IconProps) {
   );
 }
 
+export function IconActivity({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg className={className} {...base} strokeWidth={1.9}>
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+    </svg>
+  );
+}
+
 export function IconPlus({ className = "h-4 w-4" }: IconProps) {
   return (
     <svg className={className} {...base} strokeWidth={2.1}>
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+export function IconCopy({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg className={className} {...base} strokeWidth={1.9}>
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+export function IconCheck({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg className={className} {...base} strokeWidth={2.2}>
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+export function IconX({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg className={className} {...base} strokeWidth={2.2}>
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+export function IconArrowRight({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg className={className} {...base} strokeWidth={2}>
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
     </svg>
   );
 }

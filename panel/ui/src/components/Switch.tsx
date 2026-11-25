@@ -1,6 +1,6 @@
 export function Switch({ checked, disabled, onChange }: { checked: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
   return (
-    <span className={`relative inline-block h-[21px] w-[37px] flex-none ${disabled ? "opacity-55" : ""}`}>
+    <span className={`relative inline-block h-[22px] w-[38px] flex-none ${disabled ? "opacity-55" : ""}`}>
       <input
         type="checkbox"
         className="peer sr-only"
@@ -8,8 +8,8 @@ export function Switch({ checked, disabled, onChange }: { checked: boolean; disa
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
       />
-      <span className="absolute inset-0 rounded-full bg-[hsl(var(--border))] transition-colors peer-checked:bg-[hsl(var(--primary))] peer-focus-visible:ring-2 peer-focus-visible:ring-[hsl(var(--ring))] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[hsl(var(--card))]" />
-      <span className="absolute left-[2px] top-[2px] h-[17px] w-[17px] rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.3)] transition-transform peer-checked:translate-x-[16px]" />
+      <span className={`absolute inset-0 rounded-full transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-[hsl(var(--ring))] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[hsl(var(--card))] ${checked ? "bg-[hsl(var(--primary))]" : "bg-[hsl(var(--input))]"}`} />
+      <span className={`absolute left-[2px] top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.28)] transition-transform ${checked ? "translate-x-[16px]" : "translate-x-0"}`} />
     </span>
   );
 }

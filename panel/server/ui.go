@@ -76,21 +76,23 @@ var loginHTML = `<!doctype html>
       place-items: center;
       padding: 24px;
       background-color: hsl(var(--background));
-      background-image: radial-gradient(900px at 50% -300px, hsl(var(--primary) / 0.07), transparent 70%);
+      background-image: radial-gradient(880px at 50% -260px, hsl(var(--anchor-accent) / 0.11), transparent 70%);
       background-attachment: fixed;
       color: hsl(var(--foreground));
       font-family: Inter, "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
       -webkit-font-smoothing: antialiased;
     }
     .card {
-      width: min(380px, 100%);
+      width: min(390px, 100%);
       border: 1px solid hsl(var(--border));
-      border-radius: 14px;
+      border-radius: 20px;
       background: hsl(var(--card));
-      box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 30px rgba(0,0,0,.06);
-      padding: 26px;
+      box-shadow: 0 2px 10px rgba(17, 38, 34, .05), 0 12px 34px rgba(17, 38, 34, .06);
+      padding: 28px;
     }
-    .dark .card { box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 40px rgba(0,0,0,.5); }
+    .dark .card {
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 16px 48px rgba(0, 0, 0, .55);
+    }
     .brand {
       display: flex;
       align-items: center;
@@ -100,20 +102,20 @@ var loginHTML = `<!doctype html>
     .mark {
       display: grid;
       place-items: center;
-      width: 32px;
-      height: 32px;
-      border-radius: 9px;
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
       background: var(--brand-gradient);
-      color: #fff;
-      box-shadow: 0 2px 8px hsl(var(--brand-glow) / 0.35);
+      color: hsl(var(--anchor-accent));
+      box-shadow: 0 3px 10px hsl(var(--brand-glow) / 0.25), inset 0 1px 0 rgba(255, 255, 255, .14);
     }
     .mark svg { width: 17px; height: 17px; }
     h1 {
       margin: 0;
       font-size: 17px;
       line-height: 1;
-      font-weight: 600;
-      letter-spacing: 0;
+      font-weight: 700;
+      letter-spacing: -0.01em;
     }
     p {
       margin: 0 0 18px;
@@ -123,15 +125,15 @@ var loginHTML = `<!doctype html>
     label {
       display: grid;
       gap: 6px;
-      margin-top: 13px;
+      margin-top: 14px;
       color: hsl(var(--foreground));
       font-size: 12.5px;
       font-weight: 500;
     }
     input {
       width: 100%;
-      min-height: 38px;
-      border-radius: 9px;
+      min-height: 40px;
+      border-radius: 10px;
       border: 1px solid hsl(var(--input));
       background: hsl(var(--card));
       color: hsl(var(--foreground));
@@ -147,27 +149,29 @@ var loginHTML = `<!doctype html>
     }
     button {
       width: 100%;
-      min-height: 38px;
-      margin-top: 20px;
+      min-height: 40px;
+      margin-top: 22px;
       border: 0;
-      border-radius: 9px;
-      background: hsl(var(--primary));
-      color: hsl(var(--primary-foreground));
+      border-radius: 10px;
+      background: hsl(var(--anchor));
+      color: #fff;
       cursor: pointer;
       font-size: 13px;
-      font-weight: 500;
+      font-weight: 600;
       font-family: inherit;
-      box-shadow: 0 1px 2px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.14);
+      box-shadow: 0 2px 6px rgba(17, 38, 34, .18), inset 0 1px 0 rgba(255, 255, 255, .14);
       transition: background .15s;
     }
-    button:hover { background: hsl(var(--primary-hover)); }
+    button:hover { background: hsl(var(--anchor-hover)); }
+    .dark button { background: hsl(var(--primary)); }
+    .dark button:hover { background: hsl(var(--primary-hover)); }
     button:focus-visible {
       outline: 2px solid hsl(var(--ring) / 0.8);
       outline-offset: 2px;
     }
     .error {
       margin: 0 0 4px;
-      border-radius: 9px;
+      border-radius: 10px;
       background: hsl(var(--danger) / .08);
       color: hsl(var(--danger));
       padding: 10px 12px;
