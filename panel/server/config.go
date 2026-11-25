@@ -65,10 +65,32 @@ func writeProxyConfig(path string, cfg proxyConfig) error {
 	data := updateProxyConfigText(string(raw), cfg)
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(data), 0600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err := f.WriteString(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 func updateProxyConfigText(raw string, cfg proxyConfig) string {

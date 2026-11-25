@@ -319,7 +319,6 @@ Wants=network-online.target
 Type=simple
 User=$RUN_USER
 WorkingDirectory=$INSTALL_DIR
-EnvironmentFile=$CONFIG_FILE
 ExecStart=$INSTALL_DIR/turnsocks -config $CONFIG_FILE
 Restart=on-failure
 RestartSec=3
@@ -347,17 +346,18 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-cat > "$tmp_sudoers" <<EOF
+run_root install -m 0644 "$tmp_proxy" /etc/systemd/system/turnsocks.service
+run_root install -m 0644 "$tmp_panel" /etc/systemd/system/turnsocks-panel.service
+if [ "$RUN_USER" != "root" ]; then
+  cat > "$tmp_sudoers" <<EOF
 $RUN_USER ALL=(root) NOPASSWD: $SYSTEMCTL restart turnsocks
 EOF
 
-if command -v visudo >/dev/null 2>&1; then
-  run_root visudo -cf "$tmp_sudoers" >/dev/null
+  if command -v visudo >/dev/null 2>&1; then
+    run_root visudo -cf "$tmp_sudoers" >/dev/null
+  fi
+  run_root install -m 0440 "$tmp_sudoers" /etc/sudoers.d/turnsocks-panel
 fi
-
-run_root install -m 0644 "$tmp_proxy" /etc/systemd/system/turnsocks.service
-run_root install -m 0644 "$tmp_panel" /etc/systemd/system/turnsocks-panel.service
-run_root install -m 0440 "$tmp_sudoers" /etc/sudoers.d/turnsocks-panel
 run_root systemctl daemon-reload
 run_root systemctl enable turnsocks.service turnsocks-panel.service
 run_root systemctl restart turnsocks.service turnsocks-panel.service

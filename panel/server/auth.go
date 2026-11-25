@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -17,41 +18,84 @@ type panelAuth struct {
 	password string
 }
 
-type panelAuthStore struct {
-	path    string
-	mu      sync.Mutex
+type authFileStamp struct {
 	modTime time.Time
-	auth    panelAuth
+	size    int64
+	dev     uint64
+	ino     uint64
+	valid   bool
+}
+
+func statAuthFile(path string) (authFileStamp, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return authFileStamp{}, err
+	}
+	stamp := authFileStamp{
+		modTime: info.ModTime(),
+		size:    info.Size(),
+		valid:   true,
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		stamp.dev = uint64(st.Dev)
+		stamp.ino = uint64(st.Ino)
+	}
+	return stamp, nil
+}
+
+func (s authFileStamp) equal(other authFileStamp) bool {
+	return s.valid && other.valid && s.modTime.Equal(other.modTime) && s.size == other.size && s.dev == other.dev && s.ino == other.ino
+}
+
+type panelAuthStore struct {
+	path  string
+	mu    sync.Mutex
+	stamp authFileStamp
+	auth  panelAuth
 }
 
 func newPanelAuthStore(path string) (*panelAuthStore, error) {
-	auth, modTime, err := loadPanelAuth(path)
+	auth, stamp, err := loadPanelAuth(path)
 	if err != nil {
 		return nil, err
 	}
-	return &panelAuthStore{path: path, modTime: modTime, auth: auth}, nil
+	return &panelAuthStore{path: path, stamp: stamp, auth: auth}, nil
 }
 
 func (s *panelAuthStore) current() panelAuth {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	info, err := os.Stat(s.path)
+	stamp, err := statAuthFile(s.path)
 	if err != nil {
 		return s.auth
 	}
-	modTime := info.ModTime()
-	if !modTime.After(s.modTime) && !modTime.Before(s.modTime) {
+	if stamp.equal(s.stamp) {
 		return s.auth
 	}
 
-	auth, loadedModTime, err := loadPanelAuth(s.path)
+	auth, loadedStamp, err := loadPanelAuth(s.path)
 	if err != nil {
 		return s.auth
 	}
 	s.auth = auth
-	s.modTime = loadedModTime
+	s.stamp = loadedStamp
 	return s.auth
+}
+
+func (s *panelAuthStore) reload() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	auth, loadedStamp, err := loadPanelAuth(s.path)
+	if err != nil {
+		return
+	}
+	s.auth = auth
+	s.stamp = loadedStamp
 }
 
 func (s *panelAuthStore) wrap(next http.Handler) http.Handler {
@@ -169,8 +213,9 @@ func (s *panelAuthStore) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *panelAuthStore) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost && r.Method != http.MethodGet {
-		writeMethodNotAllowed(w)
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -184,17 +229,17 @@ func (s *panelAuthStore) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-func loadPanelAuth(path string) (panelAuth, time.Time, error) {
-	info, err := os.Stat(path)
+func loadPanelAuth(path string) (panelAuth, authFileStamp, error) {
+	stamp, err := statAuthFile(path)
 	if err != nil {
-		return panelAuth{}, time.Time{}, err
+		return panelAuth{}, authFileStamp{}, err
 	}
 	cfg, err := readProxyConfig(path)
 	if err != nil {
-		return panelAuth{}, time.Time{}, err
+		return panelAuth{}, authFileStamp{}, err
 	}
 	return panelAuth{
 		username: cfg.PanelUsername,
 		password: cfg.PanelPassword,
-	}, info.ModTime(), nil
+	}, stamp, nil
 }

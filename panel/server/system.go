@@ -34,7 +34,17 @@ func readServiceInfo() serviceInfo {
 }
 
 func restartTurnsocks(listen string) error {
-	if err := runCommand(10*time.Second, "sudo", "-n", "systemctl", "restart", serviceName); err != nil {
+	var err error
+	if os.Geteuid() == 0 {
+		if _, lookErr := exec.LookPath("sudo"); lookErr != nil {
+			err = runCommand(10*time.Second, "systemctl", "restart", serviceName)
+		} else {
+			err = runCommand(10*time.Second, "sudo", "-n", "systemctl", "restart", serviceName)
+		}
+	} else {
+		err = runCommand(10*time.Second, "sudo", "-n", "systemctl", "restart", serviceName)
+	}
+	if err != nil {
 		return fmt.Errorf("重启 %s 失败：%w", serviceName, err)
 	}
 	return waitTurnsocksReady(8*time.Second, listen)

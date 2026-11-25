@@ -465,3 +465,74 @@ func TestReadinessChecksSOCKSAndProcess(t *testing.T) {
 		})
 	}
 }
+
+func TestPanelAuthStoreReloadsImmediatelyOnConfigUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.env")
+	if err := os.WriteFile(path, []byte("LISTEN=127.0.0.1:1080\nDOH=https://cloudflare-dns.com/dns-query\nTURN_SERVERS=\nPANEL_USERNAME=admin\nPANEL_PASSWORD=oldpass\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newPanelAuthStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{configPath: path, authStore: store}
+	body, _ := json.Marshal(configRequest{
+		Listen: defaultProxyListen, DoH: defaultDoH,
+		PanelAuthEnabled: true, PanelUsername: "admin", PanelPassword: "newpass",
+	})
+	rec := httptest.NewRecorder()
+	a.handleUpdateConfig(rec, httptest.NewRequest(http.MethodPost, "/api/config/update", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update failed: %s", rec.Body.String())
+	}
+	if !store.current().valid("admin", "newpass") || store.current().valid("admin", "oldpass") {
+		t.Fatal("authStore did not immediately switch to updated credentials")
+	}
+}
+
+func TestDeleteServerUsesRuntimeCurrentAddr(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.env")
+	statePath := filepath.Join(dir, "turnsocks.state")
+	if err := os.WriteFile(cfgPath, []byte("LISTEN=127.0.0.1:1080\nTURN_SERVERS=first.example:3478,second.example:3478\nDOH=https://cloudflare-dns.com/dns-query\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRuntimeState(statePath, "second.example:3478"); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{configPath: cfgPath, statePath: statePath}
+	body, _ := json.Marshal(serverRequest{Server: "second.example:3478"})
+	rec := httptest.NewRecorder()
+	a.handleDeleteServer(rec, httptest.NewRequest(http.MethodPost, "/api/servers/delete", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "当前节点已删除") {
+		t.Fatalf("deleting active failover node did not report current node removal: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRestartTurnsocksAsRootWithoutSudoUsesSystemctlDirectly(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root euid")
+	}
+	dir := t.TempDir()
+	ln := readinessListener(t, "127.0.0.1:0", true)
+	callsPath := filepath.Join(dir, "systemctl.calls")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "` + callsPath + `"
+case "$*" in
+    'restart turnsocks') exit 0 ;;
+    'show --property=ActiveState,MainPID turnsocks') printf 'ActiveState=active\nMainPID=%s\n' "` + strconv.Itoa(os.Getpid()) + `" ;;
+    *) exit 99 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if err := restartTurnsocks(ln.Addr().String()); err != nil {
+		t.Fatalf("root restart without sudo failed: %v", err)
+	}
+	calls, err := os.ReadFile(callsPath)
+	if err != nil || !strings.Contains(string(calls), "restart turnsocks") {
+		t.Fatalf("systemctl was not called directly: %q, %v", calls, err)
+	}
+}

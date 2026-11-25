@@ -10,6 +10,7 @@ import (
 
 func (a *app) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	raw, err := fs.ReadFile(a.ui, "ui/dist/index.html")
 	if err != nil {
 		http.Error(w, "panel UI not built", http.StatusInternalServerError)
@@ -18,13 +19,23 @@ func (a *app) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw)
 }
 
-func (a *app) handleUIAsset(w http.ResponseWriter, r *http.Request) {
+func (a *app) assetHandler() http.Handler {
+	if a.ui == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "panel UI not built", http.StatusInternalServerError)
+		})
+	}
 	dist, err := fs.Sub(a.ui, "ui/dist")
 	if err != nil {
-		http.Error(w, "panel UI not built", http.StatusInternalServerError)
-		return
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "panel UI not built", http.StatusInternalServerError)
+		})
 	}
-	http.FileServer(http.FS(dist)).ServeHTTP(w, r)
+	files := http.FileServer(http.FS(dist))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		files.ServeHTTP(w, r)
+	})
 }
 
 func writeLoginPage(w http.ResponseWriter, status int, message string) {

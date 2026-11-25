@@ -11,7 +11,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/lyaurora/turnsocks/turncfg"
 )
 
 func measureTCPConnect(ctx context.Context, addr string) Metric {
@@ -66,16 +69,20 @@ func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (
 	}
 	statePath := filepath.Join(tempDir, "state")
 	configPath := filepath.Join(tempDir, "config.env")
+	tempConfig := "TURN_SERVERS=" + turncfg.EncodeEnvValue(server) + "\nDOH=" + turncfg.EncodeEnvValue(doh) + "\n"
+	if err := os.WriteFile(configPath, []byte(tempConfig), 0600); err != nil {
+		_ = os.RemoveAll(tempDir)
+		return "", nil, err
+	}
 
 	procCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(procCtx, bin,
 		"-config", configPath,
 		"-listen", listen,
-		"-turns", server,
-		"-doh", doh,
 		"-state", statePath,
 		"-timeout", "8s",
 	)
+	cmd.Env = filteredTempProxyEnv(os.Environ())
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
@@ -83,8 +90,9 @@ func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = 2 * time.Second
+	stderrBuf := &limitedBuffer{max: 2048}
 	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	cmd.Stderr = stderrBuf
 	if err := cmd.Start(); err != nil {
 		cancel()
 		_ = os.RemoveAll(tempDir)
@@ -109,6 +117,9 @@ func (r Runner) startTestProxy(ctx context.Context, server string, doh string) (
 		select {
 		case <-done:
 			cleanup()
+			if detail := strings.TrimSpace(stderrBuf.String()); detail != "" {
+				return "", nil, fmt.Errorf("临时 turnsocks 已退出：%v（%s）", waitErr, detail)
+			}
 			return "", nil, fmt.Errorf("临时 turnsocks 已退出：%v", waitErr)
 		default:
 		}
@@ -169,4 +180,46 @@ func freeTCPPort() (int, error) {
 		return 0, errors.New("无法分配临时端口")
 	}
 	return addr.Port, nil
+}
+
+func filteredTempProxyEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		key, _, _ := strings.Cut(entry, "=")
+		switch key {
+		case "TURN_SERVERS", "DOH", "LISTEN", "STATE_PATH", "CONFIG_PATH":
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+type limitedBuffer struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.max <= 0 {
+		return len(p), nil
+	}
+	if len(p) >= b.max {
+		b.buf = append(b.buf[:0], p[len(p)-b.max:]...)
+		return len(p), nil
+	}
+	if overflow := len(b.buf) + len(p) - b.max; overflow > 0 {
+		b.buf = append(b.buf[:0], b.buf[overflow:]...)
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
 }

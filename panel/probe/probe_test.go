@@ -33,13 +33,26 @@ func TestMain(m *testing.M) {
 func runProbeHelper() error {
 	args := flag.NewFlagSet("probe-helper", flag.ContinueOnError)
 	listen := args.String("listen", "", "")
-	for _, name := range []string{"config", "turns", "doh", "state", "timeout"} {
+	configPath := args.String("config", "", "")
+	for _, name := range []string{"turns", "doh", "state", "timeout"} {
 		args.String(name, "", "")
 	}
 	if err := args.Parse(os.Args[1:]); err != nil {
 		return err
 	}
+	for _, arg := range os.Args[1:] {
+		if arg == "-turns" || strings.HasPrefix(arg, "-turns=") {
+			return fmt.Errorf("credentials passed on command line: %q", arg)
+		}
+	}
+	if raw, err := os.ReadFile(*configPath); err != nil || !strings.Contains(string(raw), "TURN_SERVERS=") {
+		return fmt.Errorf("temp config missing TURN_SERVERS: %v", err)
+	}
 	scenario := os.Getenv("TURNSOCKS_PROBE_SCENARIO")
+	if scenario == "exit-error" {
+		fmt.Fprintln(os.Stderr, "simulated startup failure")
+		return fmt.Errorf("boom")
+	}
 	ready := func() { _ = os.WriteFile(os.Getenv("TURNSOCKS_PROBE_READY"), nil, 0600) }
 	record := func(message string) {
 		f, err := os.OpenFile(os.Getenv("TURNSOCKS_PROBE_REQUESTS"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -231,5 +244,22 @@ func TestProbeModesAndCancellation(t *testing.T) {
 				t.Fatalf("temporary proxy files remain: %v, %v", files, err)
 			}
 		})
+	}
+}
+
+func TestStartTestProxyIncludesStderrOnEarlyExit(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TURNSOCKS_BIN", bin)
+	t.Setenv("TURNSOCKS_PROBE_HELPER", "1")
+	t.Setenv("TURNSOCKS_PROBE_SCENARIO", "exit-error")
+	t.Setenv("TMPDIR", dir)
+
+	_, _, err = (Runner{}).startTestProxy(context.Background(), "user:secret@turn.example:3478", "")
+	if err == nil || !strings.Contains(err.Error(), "simulated startup failure") {
+		t.Fatalf("early exit error = %v, want captured stderr", err)
 	}
 }

@@ -30,6 +30,7 @@ type app struct {
 	testPath   string
 	checkPath  string
 	ui         fs.FS
+	authStore  *panelAuthStore
 	configMu   sync.Mutex
 	testMu     sync.Mutex
 	probeMu    sync.Mutex

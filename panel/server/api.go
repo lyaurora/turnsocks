@@ -124,7 +124,7 @@ func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	servers, removed, wasCurrent := removeServer(cfg.Servers, req.Server)
+	servers, removed, wasFirst := removeServer(cfg.Servers, req.Server)
 	if !removed {
 		writeAPIError(w, errors.New("节点不存在"))
 		return
@@ -132,6 +132,12 @@ func (a *app) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 	if len(servers) == 0 {
 		writeAPIError(w, errors.New("至少保留一个 TURN 节点"))
 		return
+	}
+	wasCurrent := wasFirst
+	if currentAddr := readRuntimeState(a.statePath).CurrentAddr; currentAddr != "" {
+		if deleted, err := parseServer(req.Server); err == nil {
+			wasCurrent = deleted.Addr == currentAddr
+		}
 	}
 	cfg.Servers = servers
 	server, _ := normalizeServer(req.Server)
@@ -261,6 +267,7 @@ func (a *app) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	a.authStore.reload()
 	if restartNeeded {
 		if err := restartTurnsocks(cfg.Listen); err != nil {
 			writeAPIError(w, a.rollbackConfig(previous, previousState, err))
@@ -277,6 +284,7 @@ func (a *app) rollbackConfig(previous proxyConfig, previousState runtimeState, c
 	if err := writeProxyConfig(a.configPath, previous); err != nil {
 		return fmt.Errorf("%w；旧配置恢复失败：%w", cause, err)
 	}
+	a.authStore.reload()
 	var recoveryErr error
 	if err := runtimestate.Update(a.statePath, func(state *runtimeState) {
 		state.CurrentAddr = previousState.CurrentAddr
@@ -399,14 +407,9 @@ func validateListenAddr(addr string) error {
 	if addr == "" {
 		return errors.New("SOCKS5 监听地址不能为空")
 	}
-	host, port, err := net.SplitHostPort(addr)
+	_, port, err := net.SplitHostPort(addr)
 	if err != nil || port == "" {
 		return errors.New("SOCKS5 监听地址应为 host:port")
-	}
-	if host != "" && net.ParseIP(host) == nil {
-		if _, err := net.LookupPort("tcp", port); err != nil {
-			return errors.New("SOCKS5 监听端口无效")
-		}
 	}
 	portNum, err := strconv.Atoi(port)
 	if err != nil || portNum <= 0 || portNum > 65535 {

@@ -77,4 +77,27 @@ func TestPanelRoutes(test *testing.T) {
 	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "&lt;script&gt;bad&lt;/script&gt;") {
 		test.Fatal("login error status or escaping changed")
 	}
+
+	// Cross-site unsafe requests must be rejected by CrossOriginProtection.
+	crossSite := httptest.NewRequest(http.MethodPost, "/api/restart", nil)
+	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	crossSite.Header.Set("Origin", "https://evil.example")
+	crossSite.SetBasicAuth("admin", "test-password")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, crossSite)
+	if response.Code != http.StatusForbidden {
+		test.Fatalf("cross-site POST status = %d, want 403", response.Code)
+	}
+
+	// Logout must require POST to avoid cross-site GET logout.
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/logout", nil))
+	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodPost {
+		test.Fatalf("GET /logout = %d Allow=%q, want 405 POST", response.Code, response.Header().Get("Allow"))
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/logout", nil))
+	if response.Code != http.StatusSeeOther {
+		test.Fatalf("POST /logout = %d, want 303", response.Code)
+	}
 }
